@@ -29,7 +29,8 @@ This project is a **Next.js + TypeScript + Tailwind CSS** one-page prototype tha
 ### Realtime status
 - Realtime audio mode is feature-flagged in the AI video modal.
 - When unavailable, the modal automatically falls back to prototype transcript mode.
-- Feature flag to enable in Vercel: `NEXT_PUBLIC_ENABLE_REALTIME_AGENT=true` (client-side env var).
+- Feature flag to enable in Vercel: `NEXT_PUBLIC_ENABLE_REALTIME_AGENT=true` (client-side env var, required).
+- Fallback messages now include a stage hint, for example: `Realtime unavailable (session setup failed). Using prototype mode.`
 
 ### Production-ready baseline
 - Reusable section/component architecture

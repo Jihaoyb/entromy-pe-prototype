@@ -11,7 +11,6 @@ interface AiVideoAgentModalProps {
 
 const followUpOptions = ['Show me a 30-day plan', 'What should I validate first?', 'When should I escalate this?'] as const;
 const realtimeFeatureEnabled = process.env.NEXT_PUBLIC_ENABLE_REALTIME_AGENT === 'true';
-const realtimeFallbackMessage = 'Realtime unavailable. Using prototype mode.';
 
 const followUpResponses: Record<(typeof followUpOptions)[number], string> = {
   'Show me a 30-day plan':
@@ -44,9 +43,69 @@ interface RealtimeSessionSuccess {
 interface RealtimeSessionFailure {
   ok: false;
   error: string;
+  stage?: 'env' | 'session_setup' | 'token_parse';
 }
 
 type RealtimeStatus = 'prototype' | 'connecting' | 'live' | 'fallback';
+type RealtimeFailureStage =
+  | 'feature flag disabled'
+  | 'browser unsupported'
+  | 'microphone permission denied'
+  | 'session setup failed'
+  | 'token parse failed'
+  | 'webrtc setup failed'
+  | 'sdp handshake failed'
+  | 'data channel failed'
+  | 'unknown';
+
+class RealtimeFlowError extends Error {
+  stageHint: RealtimeFailureStage;
+  uiDetail?: string;
+
+  constructor(stageHint: RealtimeFailureStage, message: string, uiDetail?: string) {
+    super(message);
+    this.stageHint = stageHint;
+    this.uiDetail = uiDetail;
+  }
+}
+
+function sanitizeDetail(value?: string) {
+  if (!value) return '';
+  return value.replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
+function buildRealtimeFallbackMessage(stage: RealtimeFailureStage, detail?: string) {
+  const safeDetail = sanitizeDetail(detail);
+  if (!safeDetail) return `Realtime unavailable (${stage}). Using prototype mode.`;
+  return `Realtime unavailable (${stage}: ${safeDetail}). Using prototype mode.`;
+}
+
+function waitForDataChannelOpen(channel: RTCDataChannel, timeoutMs = 8000) {
+  if (channel.readyState === 'open') return Promise.resolve();
+
+  return new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      channel.removeEventListener('open', onOpen);
+      channel.removeEventListener('error', onError);
+      reject(new RealtimeFlowError('data channel failed', 'Realtime data channel did not open before timeout.'));
+    }, timeoutMs);
+
+    const onOpen = () => {
+      window.clearTimeout(timeout);
+      channel.removeEventListener('error', onError);
+      resolve();
+    };
+
+    const onError = () => {
+      window.clearTimeout(timeout);
+      channel.removeEventListener('open', onOpen);
+      reject(new RealtimeFlowError('data channel failed', 'Realtime data channel emitted an error.'));
+    };
+
+    channel.addEventListener('open', onOpen, { once: true });
+    channel.addEventListener('error', onError, { once: true });
+  });
+}
 
 function extractRealtimeText(payload: unknown): string | null {
   if (!payload || typeof payload !== 'object') return null;
@@ -152,40 +211,94 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
     if (realtimeStatus === 'connecting' || realtimeStatus === 'live') return;
 
     if (!realtimeFeatureEnabled) {
-      switchToFallbackMode(realtimeFallbackMessage);
+      console.info('[AiVideoAgentModal][realtime] feature flag disabled');
+      switchToFallbackMode(buildRealtimeFallbackMessage('feature flag disabled'));
       return;
     }
 
     if (typeof window === 'undefined' || !window.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
-      switchToFallbackMode(realtimeFallbackMessage);
+      console.info('[AiVideoAgentModal][realtime] browser unsupported');
+      switchToFallbackMode(buildRealtimeFallbackMessage('browser unsupported'));
       return;
     }
 
+    console.info('[AiVideoAgentModal][realtime] connect requested');
     setRealtimeStatus('connecting');
     setRealtimeMessage('Requesting microphone access and connecting to AI...');
 
     try {
-      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      microphoneStreamRef.current = micStream;
+      console.info('[AiVideoAgentModal][realtime] requesting microphone permission');
+      let micStream: MediaStream;
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (error) {
+        const permissionError = error as DOMException;
+        if (permissionError?.name === 'NotAllowedError' || permissionError?.name === 'PermissionDeniedError') {
+          throw new RealtimeFlowError('microphone permission denied', 'User denied microphone permission.');
+        }
+        throw new RealtimeFlowError('microphone permission denied', 'Unable to acquire microphone stream.');
+      }
 
+      microphoneStreamRef.current = micStream;
+      console.info('[AiVideoAgentModal][realtime] microphone stream acquired', {
+        audioTracks: micStream.getAudioTracks().length
+      });
+
+      console.info('[AiVideoAgentModal][realtime] requesting ephemeral session');
       const sessionResponse = await fetch('/api/realtime-session', { method: 'POST' });
       const sessionData = (await sessionResponse.json()) as RealtimeSessionSuccess | RealtimeSessionFailure;
 
       if (!sessionResponse.ok || !sessionData.ok) {
-        throw new Error(sessionData.ok ? 'Realtime session request failed.' : sessionData.error);
+        const stageHint =
+          !sessionData.ok && sessionData.stage === 'token_parse'
+            ? 'token parse failed'
+            : !sessionData.ok && sessionData.stage === 'session_setup'
+              ? 'session setup failed'
+              : !sessionData.ok && sessionData.stage === 'env'
+                ? 'session setup failed'
+                : 'session setup failed';
+        const detail = !sessionData.ok ? sessionData.error : 'Session endpoint returned an unexpected payload.';
+        throw new RealtimeFlowError(stageHint, `Realtime session endpoint failed with status ${sessionResponse.status}.`, detail);
       }
 
-      const peerConnection = new RTCPeerConnection();
+      if (!sessionData.clientSecret || !sessionData.model) {
+        throw new RealtimeFlowError('token parse failed', 'Realtime session payload did not include required fields.');
+      }
+
+      console.info('[AiVideoAgentModal][realtime] session received', {
+        hasClientSecret: Boolean(sessionData.clientSecret),
+        model: sessionData.model,
+        voice: sessionData.voice
+      });
+
+      let peerConnection: RTCPeerConnection;
+      try {
+        peerConnection = new RTCPeerConnection();
+      } catch {
+        throw new RealtimeFlowError('webrtc setup failed', 'Unable to initialize RTCPeerConnection.');
+      }
       peerConnectionRef.current = peerConnection;
 
       const remoteAudio = new Audio();
       remoteAudio.autoplay = true;
       remoteAudioRef.current = remoteAudio;
 
-      micStream.getAudioTracks().forEach((track) => peerConnection.addTrack(track, micStream));
+      const audioTracks = micStream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        throw new RealtimeFlowError('webrtc setup failed', 'No microphone tracks available after permission grant.');
+      }
+
+      audioTracks.forEach((track) => peerConnection.addTrack(track, micStream));
+      console.info('[AiVideoAgentModal][realtime] microphone track attached to peer connection', {
+        audioTracks: audioTracks.length
+      });
 
       peerConnection.ontrack = (event) => {
         const [remoteStream] = event.streams;
+        console.info('[AiVideoAgentModal][realtime] received remote track', {
+          hasStream: Boolean(remoteStream),
+          trackCount: remoteStream?.getTracks().length ?? 0
+        });
         if (remoteStream && remoteAudioRef.current) {
           remoteAudioRef.current.srcObject = remoteStream;
           remoteAudioRef.current.play().catch(() => undefined);
@@ -193,18 +306,27 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       };
 
       peerConnection.onconnectionstatechange = () => {
+        console.info('[AiVideoAgentModal][realtime] connection state changed', {
+          state: peerConnection.connectionState
+        });
         if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'disconnected') {
-          switchToFallbackMode('Realtime connection dropped. Continuing in prototype mode.');
+          switchToFallbackMode(buildRealtimeFallbackMessage('webrtc setup failed', 'Connection dropped.'));
         }
       };
 
       const dataChannel = peerConnection.createDataChannel('oai-events');
       dataChannelRef.current = dataChannel;
+      console.info('[AiVideoAgentModal][realtime] data channel created');
 
       dataChannel.onopen = () => {
+        console.info('[AiVideoAgentModal][realtime] data channel open');
         setRealtimeStatus('live');
         setRealtimeMessage('Live audio connected. Speak naturally to the AI agent.');
         appendTranscript('AI Agent: Live audio is connected. I am ready for your follow-up.');
+      };
+
+      dataChannel.onerror = () => {
+        console.error('[AiVideoAgentModal][realtime] data channel error');
       };
 
       dataChannel.onmessage = (event) => {
@@ -229,7 +351,9 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
+      console.info('[AiVideoAgentModal][realtime] local offer created');
 
+      // WebRTC handshake remains sensitive to model/account/browser compatibility, so we preserve transcript fallback on failure.
       const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=${encodeURIComponent(sessionData.model)}`, {
         method: 'POST',
         headers: {
@@ -241,14 +365,26 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
       if (!sdpResponse.ok) {
         const errorText = await sdpResponse.text();
-        throw new Error(`Realtime SDP handshake failed: ${errorText.slice(0, 160)}`);
+        throw new RealtimeFlowError('sdp handshake failed', `Realtime SDP handshake failed.`, errorText);
       }
 
       const answerSdp = await sdpResponse.text();
       await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+      console.info('[AiVideoAgentModal][realtime] remote SDP applied');
+
+      await waitForDataChannelOpen(dataChannel);
     } catch (error) {
-      console.error('[AiVideoAgentModal] Realtime session failed:', error);
-      switchToFallbackMode(realtimeFallbackMessage);
+      if (error instanceof RealtimeFlowError) {
+        console.error('[AiVideoAgentModal][realtime] failed', {
+          stage: error.stageHint,
+          message: error.message
+        });
+        switchToFallbackMode(buildRealtimeFallbackMessage(error.stageHint, error.uiDetail));
+        return;
+      }
+
+      console.error('[AiVideoAgentModal][realtime] failed with unknown error', error);
+      switchToFallbackMode(buildRealtimeFallbackMessage('unknown'));
     }
   };
 
