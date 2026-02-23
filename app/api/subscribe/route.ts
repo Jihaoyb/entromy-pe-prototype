@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerConfig } from '@/lib/server/serverConfig';
+import { isValidEmailAddress } from '@/lib/validation/email';
 
 interface SubscribeRequestBody {
   email: string;
@@ -15,17 +16,13 @@ interface SubscribeErrorResponse {
   error: string;
 }
 
-function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
 function parsePayload(payload: unknown): SubscribeRequestBody | null {
   if (!payload || typeof payload !== 'object') return null;
   const maybeBody = payload as Partial<SubscribeRequestBody>;
   if (typeof maybeBody.email !== 'string') return null;
 
   const email = maybeBody.email.trim();
-  if (!isValidEmail(email)) return null;
+  if (!isValidEmailAddress(email)) return null;
 
   return { email };
 }

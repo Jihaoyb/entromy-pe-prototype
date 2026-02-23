@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from 'react';
 import Image from 'next/image';
+import { isValidEmailAddress } from '@/lib/validation/email';
 
 interface SubscribeApiSuccess {
   ok: true;
@@ -11,10 +12,6 @@ interface SubscribeApiSuccess {
 interface SubscribeApiFailure {
   ok: false;
   error: string;
-}
-
-function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 export function Footer() {
@@ -27,7 +24,7 @@ export function Footer() {
     event.preventDefault();
 
     const normalizedEmail = email.trim();
-    const hasValidEmail = isValidEmail(normalizedEmail);
+    const hasValidEmail = isValidEmailAddress(normalizedEmail);
 
     if (!hasValidEmail) {
       setSubscribeSuccess('');

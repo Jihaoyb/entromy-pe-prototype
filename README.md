@@ -16,6 +16,7 @@ This project is a **Next.js + TypeScript + Tailwind CSS** one-page prototype tha
 - All **Book Demo** actions now open Calendly in a new tab
 - Specialist escalation now routes to Calendly for live session booking
 - Added backend API routes for triage (`/api/triage`) and subscribe (`/api/subscribe`)
+- Added a realtime session bootstrap route (`/api/realtime-session`) for ephemeral AI audio sessions
 - Added/expanded the prototype feature:
   - Ask a portfolio question
   - Receive a concise PE-style response from server-side AI (with fallback mode)
@@ -23,8 +24,11 @@ This project is a **Next.js + TypeScript + Tailwind CSS** one-page prototype tha
 
 ## Prototype vs Production
 ### Prototype/mock behavior
-- AI video agent modal remains a frontend interaction shell (no live media integration)
+- AI video agent modal keeps the prototype shell UI and now includes a feature-flagged realtime audio path
 - Subscribe mode defaults to `log` (server logs emails; no ESP integration yet)
+### Realtime status
+- Realtime audio mode is feature-flagged in the AI video modal.
+- When unavailable, the modal automatically falls back to prototype transcript mode.
 
 ### Production-ready baseline
 - Reusable section/component architecture
@@ -49,12 +53,18 @@ Create `.env.local` with:
 ```bash
 OPENAI_API_KEY=your_openai_key
 OPENAI_MODEL=gpt-4.1-mini
+OPENAI_REALTIME_MODEL=gpt-realtime
+OPENAI_REALTIME_VOICE=marin
+NEXT_PUBLIC_ENABLE_REALTIME_AGENT=true
 SUBSCRIBE_MODE=log
 NEXT_PUBLIC_CALENDLY_URL=https://calendly.com/entromy-team/initial-demo
 ```
 
 - `OPENAI_API_KEY`: enables live triage responses from `/api/triage`.
 - `OPENAI_MODEL` (optional): defaults to `gpt-4.1-mini`.
+- `OPENAI_REALTIME_MODEL` (optional): realtime model for `/api/realtime-session`.
+- `OPENAI_REALTIME_VOICE` (optional): realtime voice profile.
+- `NEXT_PUBLIC_ENABLE_REALTIME_AGENT`: enables the client realtime connect path in the AI modal.
 - `SUBSCRIBE_MODE` (optional): `log` (default) logs newsletter signups server-side.
 - `NEXT_PUBLIC_CALENDLY_URL` (optional): overrides the default shared Calendly link.
 
@@ -68,7 +78,12 @@ If `OPENAI_API_KEY` is missing or AI calls fail, `/api/triage` returns a strong 
 - `POST /api/subscribe`
   - Request: `{ email: string }`
   - Response: `{ ok: true, message: string }` or `{ ok: false, error: string }`
+  - Uses stronger validation (no whitespace, normalized shape, 2+ letter TLD) in both client and server.
   - In `log` mode, email is logged server-side for demo use.
+- `POST /api/realtime-session`
+  - Creates a server-side ephemeral realtime token for browser WebRTC usage.
+  - Never exposes `OPENAI_API_KEY` to the client.
+  - Returns graceful errors so UI can fall back to prototype mode.
 
 ## Key Components
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/Navbar.tsx`
@@ -81,6 +96,7 @@ If `OPENAI_API_KEY` is missing or AI calls fail, `/api/triage` returns a strong 
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/Footer.tsx`
 - `/Users/jihaoy/dev/entromy-pe-prototype/app/api/triage/route.ts`
 - `/Users/jihaoy/dev/entromy-pe-prototype/app/api/subscribe/route.ts`
+- `/Users/jihaoy/dev/entromy-pe-prototype/app/api/realtime-session/route.ts`
 
 ## Where To Edit Copy
 - Primary page copy and section data:
@@ -96,6 +112,8 @@ If `OPENAI_API_KEY` is missing or AI calls fail, `/api/triage` returns a strong 
 - Server env and fallback logic:
   - `/Users/jihaoy/dev/entromy-pe-prototype/lib/server/serverConfig.ts`
   - `/Users/jihaoy/dev/entromy-pe-prototype/lib/server/triageFallback.ts`
+- Shared email validator:
+  - `/Users/jihaoy/dev/entromy-pe-prototype/lib/validation/email.ts`
 
 ## Assets In `/public`
 - Brand: `company-logo.png`, `browser_tab.png`
@@ -105,5 +123,5 @@ If `OPENAI_API_KEY` is missing or AI calls fail, `/api/triage` returns a strong 
 
 ## Suggested Next Steps
 1. Connect Ask flow to a real advisor model/API and include source-cited recommendations.
-2. Add auth/rate-limiting and request telemetry for `/api/triage`.
+2. Add auth/rate-limiting and request telemetry for `/api/triage` and `/api/realtime-session`.
 3. Add auth + workspace context for portfolio-specific recommendations.
