@@ -11,82 +11,70 @@ const suggestedPrompts = [
   'What signals suggest execution cadence is slipping?'
 ];
 
-interface ResponsePattern {
-  id: string;
-  keywords: string[];
-  response: string;
+interface TriageApiSuccess {
+  ok: true;
+  answer: string;
+  recommendedNextStep: string;
+  mode: 'live' | 'fallback';
 }
 
-const responsePatterns: ResponsePattern[] = [
-  {
-    id: 'ceo-transition',
-    keywords: ['ceo', 'transition', 'lead change'],
-    response:
-      'Start with role clarity and decision rights in the first two weeks, then align weekly operating reviews to the top value-creation levers. This stabilizes execution during leadership change and reduces avoidable escalation.'
-  },
-  {
-    id: 'first-100-days',
-    keywords: ['first 100', '100 days', 'post-close', 'first 30'],
-    response:
-      'In the first 100 days, prioritize leadership role-fit, cadence quality, and blockers tied to the investment thesis. Capture owners and timelines in a short intervention plan so partners can move quickly.'
-  },
-  {
-    id: 'leadership-assessment',
-    keywords: ['leadership', 'team', 'role fit', 'capability'],
-    response:
-      'Use one leadership scorecard across role fit, bench strength, and execution reliability. Sequence interventions by business impact so the most material gaps are addressed first.'
-  },
-  {
-    id: 'operating-cadence',
-    keywords: ['cadence', 'slipping', 'execution', 'missed'],
-    response:
-      'When cadence slips, check ownership clarity, milestone quality, and unresolved cross-functional dependencies before adding new workstreams. A 14-day cadence reset with tighter checkpoints usually restores momentum.'
-  },
-  {
-    id: 'portfolio-comparison',
-    keywords: ['compare', 'portfolio', 'across companies', 'cross-portfolio'],
-    response:
-      'Compare assets with a common scorecard for leadership stability, operating rhythm, and intervention responsiveness. This helps operating partners direct support where delay drives the highest value leakage risk.'
-  },
-  {
-    id: 'exit-readiness',
-    keywords: ['exit', 'readiness', 'sale process', 'pre-exit'],
-    response:
-      'In pre-exit planning, validate leadership resilience and document execution proof points tied to the value-creation narrative. This strengthens management confidence and sponsor positioning.'
-  }
-];
-
-function buildMockResponse(question: string) {
-  const normalized = question.toLowerCase();
-  const match = responsePatterns.find((pattern) => pattern.keywords.some((keyword) => normalized.includes(keyword)));
-
-  if (match) return match.response;
-
-  return 'Start with a rapid baseline of leadership and execution risk, then map blockers to near-term value priorities. Assign targeted interventions with clear owners and review progress weekly until momentum is stable.';
+interface TriageApiFailure {
+  ok: false;
+  error: string;
 }
+
+const NETWORK_FALLBACK_ANSWER =
+  'We could not reach the triage service right now. Start with leadership role clarity, operating cadence checkpoints, and the top execution blockers tied to value creation.';
+const NETWORK_FALLBACK_NEXT_STEP = 'Open a specialist review to align owners, milestones, and escalation triggers.';
 
 export function AgentVideoModule() {
   const [question, setQuestion] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [hasResponse, setHasResponse] = useState(false);
   const [responseText, setResponseText] = useState('');
+  const [recommendedNextStep, setRecommendedNextStep] = useState('');
+  const [responseMode, setResponseMode] = useState<'live' | 'fallback'>('fallback');
   const [aiVideoModalOpen, setAiVideoModalOpen] = useState(false);
 
   const canAsk = question.trim().length > 0 && !isLoading;
 
-  // Prototype-only interaction: this simulates quick PE triage before specialist escalation.
+  // Calls the server triage endpoint with graceful fallback messaging if the API is unavailable.
   const handleAsk = async () => {
     const trimmedQuestion = question.trim();
     if (!trimmedQuestion || isLoading) return;
 
     setIsLoading(true);
     setHasResponse(false);
+    setResponseText('');
+    setRecommendedNextStep('');
 
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    try {
+      const response = await fetch('/api/triage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: trimmedQuestion,
+          context: { source: 'agent-panel' }
+        })
+      });
 
-    setResponseText(buildMockResponse(trimmedQuestion));
-    setHasResponse(true);
-    setIsLoading(false);
+      const data = (await response.json()) as TriageApiSuccess | TriageApiFailure;
+      if (!response.ok || !data.ok) {
+        throw new Error('Triage endpoint returned an invalid response.');
+      }
+
+      setResponseText(data.answer);
+      setRecommendedNextStep(data.recommendedNextStep);
+      setResponseMode(data.mode);
+    } catch (error) {
+      console.error('[AgentVideoModule] Failed to fetch triage response:', error);
+      setResponseText(NETWORK_FALLBACK_ANSWER);
+      setRecommendedNextStep(NETWORK_FALLBACK_NEXT_STEP);
+      setResponseMode('fallback');
+    } finally {
+      setHasResponse(true);
+      setIsLoading(false);
+    }
   };
 
   const handleEscalateFromAiVideo = () => {
@@ -148,7 +136,7 @@ export function AgentVideoModule() {
           </div>
 
           <div className="rounded-md border border-brand-line bg-white p-[18px]">
-            <p className="text-sm font-medium text-brand-ink">Mocked response</p>
+            <p className="text-sm font-medium text-brand-ink">Advisory response</p>
             <div
               className="mt-2.5 min-h-[168px] rounded-md border border-dashed border-brand-line bg-brand-panel p-3.5 text-sm leading-[1.58] text-brand-muted"
               aria-live="polite"
@@ -163,9 +151,13 @@ export function AgentVideoModule() {
             {hasResponse && !isLoading ? (
               <>
                 <p className="mt-3 text-xs leading-[1.5] text-brand-muted">
-                  Recommended next step: Review this with an Entromy specialist and align on a 30-minute diagnostic or a
-                  10-minute triage call.
+                  Recommended next step: {recommendedNextStep}
                 </p>
+                {responseMode === 'fallback' ? (
+                  <p className="mt-1 text-[11px] leading-[1.4] text-brand-muted">
+                    Using fallback mode while live AI is unavailable.
+                  </p>
+                ) : null}
                 <div className="mt-3 flex flex-wrap gap-2.5">
                   <button
                     type="button"

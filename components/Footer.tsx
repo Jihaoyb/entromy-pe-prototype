@@ -3,6 +3,20 @@
 import { FormEvent, useState } from 'react';
 import Image from 'next/image';
 
+interface SubscribeApiSuccess {
+  ok: true;
+  message: string;
+}
+
+interface SubscribeApiFailure {
+  ok: false;
+  error: string;
+}
+
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
 export function Footer() {
   const [email, setEmail] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -13,9 +27,9 @@ export function Footer() {
     event.preventDefault();
 
     const normalizedEmail = email.trim();
-    const isValidEmail = normalizedEmail.length > 0 && normalizedEmail.includes('@') && normalizedEmail.includes('.');
+    const hasValidEmail = isValidEmail(normalizedEmail);
 
-    if (!isValidEmail) {
+    if (!hasValidEmail) {
       setSubscribeSuccess('');
       setSubscribeError('Please enter a valid work email.');
       return;
@@ -23,12 +37,29 @@ export function Footer() {
 
     setSubscribeError('');
     setIsSubmitting(true);
+    setSubscribeSuccess('');
 
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    try {
+      const response = await fetch('/api/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: normalizedEmail })
+      });
 
-    setIsSubmitting(false);
-    setSubscribeSuccess("Thanks for subscribing. We'll send updates soon.");
-    setEmail('');
+      const data = (await response.json()) as SubscribeApiSuccess | SubscribeApiFailure;
+      if (!response.ok || !data.ok) {
+        setSubscribeError(data.ok ? 'Subscription failed. Please try again.' : data.error || 'Subscription failed. Please try again.');
+        return;
+      }
+
+      setSubscribeSuccess(data.message);
+      setEmail('');
+    } catch (error) {
+      console.error('[Footer] Subscribe request failed:', error);
+      setSubscribeError('Network error. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (

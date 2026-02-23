@@ -15,16 +15,16 @@ This project is a **Next.js + TypeScript + Tailwind CSS** one-page prototype tha
 - Hero secondary CTA now links directly to the Agent prototype flow for faster concept discovery
 - All **Book Demo** actions now open Calendly in a new tab
 - Specialist escalation now routes to Calendly for live session booking
+- Added backend API routes for triage (`/api/triage`) and subscribe (`/api/subscribe`)
 - Added/expanded the prototype feature:
   - Ask a portfolio question
-  - Receive a mocked advisor-style response
+  - Receive a concise PE-style response from server-side AI (with fallback mode)
   - Escalate to either an instant AI video agent flow or a Calendly specialist booking flow
 
 ## Prototype vs Production
 ### Prototype/mock behavior
-- Ask responses are simulated in the UI (no backend or LLM API call yet)
-- AI video agent modal is a frontend-only concept (no live media integration)
-- Newsletter subscribe flow is frontend-only with validation/loading/success states
+- AI video agent modal remains a frontend interaction shell (no live media integration)
+- Subscribe mode defaults to `log` (server logs emails; no ESP integration yet)
 
 ### Production-ready baseline
 - Reusable section/component architecture
@@ -43,6 +43,33 @@ npm install
 npm run dev
 ```
 
+## Environment Variables
+Create `.env.local` with:
+
+```bash
+OPENAI_API_KEY=your_openai_key
+OPENAI_MODEL=gpt-4.1-mini
+SUBSCRIBE_MODE=log
+NEXT_PUBLIC_CALENDLY_URL=https://calendly.com/entromy-team/initial-demo
+```
+
+- `OPENAI_API_KEY`: enables live triage responses from `/api/triage`.
+- `OPENAI_MODEL` (optional): defaults to `gpt-4.1-mini`.
+- `SUBSCRIBE_MODE` (optional): `log` (default) logs newsletter signups server-side.
+- `NEXT_PUBLIC_CALENDLY_URL` (optional): overrides the default shared Calendly link.
+
+If `OPENAI_API_KEY` is missing or AI calls fail, `/api/triage` returns a strong fallback response with `mode: "fallback"` so the demo remains usable.
+
+## API Routes
+- `POST /api/triage`
+  - Request: `{ question: string, context?: { source?: "agent-panel" | "ai-video-modal", portfolioStage?: string } }`
+  - Response: `{ ok: true, answer: string, recommendedNextStep: string, mode: "live" | "fallback" }`
+  - Returns `400` on invalid payload.
+- `POST /api/subscribe`
+  - Request: `{ email: string }`
+  - Response: `{ ok: true, message: string }` or `{ ok: false, error: string }`
+  - In `log` mode, email is logged server-side for demo use.
+
 ## Key Components
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/Navbar.tsx`
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/HeroSection.tsx`
@@ -52,6 +79,8 @@ npm run dev
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/AgentVideoModule.tsx`
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/AiVideoAgentModal.tsx`
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/Footer.tsx`
+- `/Users/jihaoy/dev/entromy-pe-prototype/app/api/triage/route.ts`
+- `/Users/jihaoy/dev/entromy-pe-prototype/app/api/subscribe/route.ts`
 
 ## Where To Edit Copy
 - Primary page copy and section data:
@@ -64,6 +93,9 @@ npm run dev
   - `/Users/jihaoy/dev/entromy-pe-prototype/components/AiVideoAgentModal.tsx`
 - Shared booking URL:
   - `/Users/jihaoy/dev/entromy-pe-prototype/data/siteConfig.ts`
+- Server env and fallback logic:
+  - `/Users/jihaoy/dev/entromy-pe-prototype/lib/server/serverConfig.ts`
+  - `/Users/jihaoy/dev/entromy-pe-prototype/lib/server/triageFallback.ts`
 
 ## Assets In `/public`
 - Brand: `company-logo.png`, `browser_tab.png`
@@ -73,5 +105,5 @@ npm run dev
 
 ## Suggested Next Steps
 1. Connect Ask flow to a real advisor model/API and include source-cited recommendations.
-2. Replace the placeholder Calendly URL with your production booking link and routing logic.
+2. Add auth/rate-limiting and request telemetry for `/api/triage`.
 3. Add auth + workspace context for portfolio-specific recommendations.

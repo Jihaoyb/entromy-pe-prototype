@@ -20,14 +20,60 @@ const followUpResponses: Record<(typeof followUpOptions)[number], string> = {
     'Escalate when two cadence cycles slip, decision latency increases, or key leaders are blocked on cross-functional dependencies.'
 };
 
+interface TriageApiSuccess {
+  ok: true;
+  answer: string;
+  recommendedNextStep: string;
+  mode: 'live' | 'fallback';
+}
+
+interface TriageApiFailure {
+  ok: false;
+  error: string;
+}
+
 export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecialist }: AiVideoAgentModalProps) {
   const [transcript, setTranscript] = useState<string[]>([
     'AI Agent: I can help triage this quickly and suggest a practical next step for your deal or operating team.'
   ]);
+  const [isFollowUpLoading, setIsFollowUpLoading] = useState(false);
+
+  const handleFollowUp = async (option: (typeof followUpOptions)[number]) => {
+    if (isFollowUpLoading) return;
+
+    setTranscript((prev) => [...prev, `You: ${option}`]);
+    setIsFollowUpLoading(true);
+
+    try {
+      const combinedQuestion = question.trim() ? `${question.trim()} Follow-up: ${option}` : option;
+
+      const response = await fetch('/api/triage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: combinedQuestion,
+          context: { source: 'ai-video-modal' }
+        })
+      });
+
+      const data = (await response.json()) as TriageApiSuccess | TriageApiFailure;
+      if (!response.ok || !data.ok) {
+        throw new Error('AI video follow-up request failed.');
+      }
+
+      setTranscript((prev) => [...prev, `AI Agent: ${data.answer}`, `AI Agent Next step: ${data.recommendedNextStep}`]);
+    } catch (error) {
+      console.error('[AiVideoAgentModal] Failed to fetch follow-up response:', error);
+      setTranscript((prev) => [...prev, `AI Agent: ${followUpResponses[option]}`]);
+    } finally {
+      setIsFollowUpLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) {
       setTranscript(['AI Agent: I can help triage this quickly and suggest a practical next step for your deal or operating team.']);
+      setIsFollowUpLoading(false);
       return;
     }
 
@@ -100,20 +146,22 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
                 <button
                   key={option}
                   type="button"
-                  onClick={() => setTranscript((prev) => [...prev, `You: ${option}`, `AI Agent: ${followUpResponses[option]}`])}
-                  className="rounded-full border border-brand-line bg-white px-3 py-1.5 text-xs text-brand-muted transition-colors hover:bg-brand-greenTint hover:text-brand-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
+                  onClick={() => handleFollowUp(option)}
+                  disabled={isFollowUpLoading}
+                  className="rounded-full border border-brand-line bg-white px-3 py-1.5 text-xs text-brand-muted transition-colors hover:bg-brand-greenTint hover:text-brand-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {option}
                 </button>
               ))}
             </div>
 
-            <div className="mt-3 min-h-[170px] rounded-md border border-dashed border-brand-line bg-brand-panel p-3 text-sm leading-[1.55] text-brand-muted">
+            <div className="mt-3 min-h-[170px] rounded-md border border-dashed border-brand-line bg-brand-panel p-3 text-sm leading-[1.55] text-brand-muted" aria-live="polite">
               {transcript.map((line, index) => (
                 <p key={`${line}-${index}`} className={index > 0 ? 'mt-2' : undefined}>
                   {line}
                 </p>
               ))}
+              {isFollowUpLoading ? <p className="mt-2 text-brand-muted/90">AI Agent: Reviewing your follow-up...</p> : null}
             </div>
           </div>
         </div>
