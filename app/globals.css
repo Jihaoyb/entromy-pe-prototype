@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f7f7f5;
+  --foreground: #2f2f2f;
+  --surface: #ffffff;
+  --muted: #5a5a5a;
+  --brand: #4e9a06;
+  --brand-accent: #448805;
+  --line: #e6e7e3;
+  --panel: #f4f7f8;
+  --green-tint: #eef7e8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.section-shell {
+  /* Slightly wider shared layout shell to reduce center crowding across all sections. */
+  @apply mx-auto w-full max-w-[1260px] px-5 lg:px-10;
+}
+
+.surface-card {
+  @apply rounded-xl2 border border-[var(--line)] bg-[var(--surface)] shadow-card;
+}
+
+.section-title {
+  @apply text-3xl font-medium leading-[1.22] text-brand-ink md:text-[40px];
+}
+
+.body-copy {
+  @apply text-[15px] leading-[1.65] text-brand-muted;
+}
+
+.section-divider {
+  @apply h-px w-full bg-brand-line;
+}

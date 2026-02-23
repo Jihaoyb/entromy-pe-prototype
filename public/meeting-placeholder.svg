@@ -1,0 +1,26 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Meeting room placeholder">
+  <rect width="1200" height="760" fill="#EDEEEA"/>
+  <rect x="38" y="34" width="786" height="692" fill="#F7F7F5"/>
+  <rect x="72" y="70" width="162" height="304" fill="#DBE2E6"/>
+  <rect x="244" y="70" width="162" height="304" fill="#E0E6E9"/>
+  <rect x="416" y="70" width="162" height="304" fill="#D7DEE3"/>
+  <rect x="588" y="70" width="162" height="304" fill="#E0E5E8"/>
+  <rect x="72" y="384" width="678" height="300" fill="#F4F7F8"/>
+  <rect x="788" y="34" width="374" height="692" fill="#CAC9C7"/>
+  <rect x="828" y="80" width="290" height="612" fill="#B6B7B6"/>
+  <ellipse cx="578" cy="540" rx="282" ry="52" fill="#D8DAD7"/>
+  <rect x="318" y="476" width="520" height="122" rx="4" fill="#FFFFFF" stroke="#D8DDD8"/>
+  <rect x="392" y="496" width="78" height="88" rx="6" fill="#2F2F2F" opacity="0.55"/>
+  <rect x="522" y="495" width="78" height="89" rx="6" fill="#2F2F2F" opacity="0.48"/>
+  <rect x="652" y="496" width="78" height="88" rx="6" fill="#2F2F2F" opacity="0.42"/>
+  <circle cx="430" cy="442" r="22" fill="#535353"/>
+  <rect x="412" y="462" width="38" height="68" rx="18" fill="#616161"/>
+  <circle cx="544" cy="438" r="22" fill="#505050"/>
+  <rect x="526" y="458" width="38" height="68" rx="18" fill="#616161"/>
+  <circle cx="658" cy="440" r="22" fill="#4F4F4F"/>
+  <rect x="640" y="460" width="38" height="68" rx="18" fill="#5D5D5D"/>
+  <circle cx="822" cy="434" r="23" fill="#595857"/>
+  <rect x="803" y="454" width="40" height="72" rx="19" fill="#6A6968"/>
+  <rect x="86" y="86" width="651" height="14" fill="#EEF7E8"/>
+  <text x="92" y="97" fill="#4E9A06" font-family="Arial, sans-serif" font-size="11" font-weight="700">ILLUSTRATIVE MEETING VISUAL</text>
+</svg>
