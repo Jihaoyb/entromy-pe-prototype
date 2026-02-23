@@ -1,6 +1,7 @@
 const EMAIL_SHAPE_REGEX =
   /^(?=.{3,254}$)(?!.*\s)([A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)$/;
 
+// Format-only validation for UX and basic API hygiene; this does not verify mailbox existence or deliverability.
 export function isValidEmailAddress(input: string): boolean {
   const email = input.trim();
   const match = email.match(EMAIL_SHAPE_REGEX);

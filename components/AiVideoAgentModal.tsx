@@ -11,6 +11,7 @@ interface AiVideoAgentModalProps {
 
 const followUpOptions = ['Show me a 30-day plan', 'What should I validate first?', 'When should I escalate this?'] as const;
 const realtimeFeatureEnabled = process.env.NEXT_PUBLIC_ENABLE_REALTIME_AGENT === 'true';
+const realtimeFallbackMessage = 'Realtime unavailable. Using prototype mode.';
 
 const followUpResponses: Record<(typeof followUpOptions)[number], string> = {
   'Show me a 30-day plan':
@@ -151,12 +152,12 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
     if (realtimeStatus === 'connecting' || realtimeStatus === 'live') return;
 
     if (!realtimeFeatureEnabled) {
-      switchToFallbackMode('Realtime mode is disabled by feature flag. Using prototype mode.');
+      switchToFallbackMode(realtimeFallbackMessage);
       return;
     }
 
     if (typeof window === 'undefined' || !window.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
-      switchToFallbackMode('Realtime mode is unavailable in this browser. Using prototype mode.');
+      switchToFallbackMode(realtimeFallbackMessage);
       return;
     }
 
@@ -247,7 +248,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp });
     } catch (error) {
       console.error('[AiVideoAgentModal] Realtime session failed:', error);
-      switchToFallbackMode('Realtime mode unavailable, using prototype mode.');
+      switchToFallbackMode(realtimeFallbackMessage);
     }
   };
 
@@ -448,9 +449,6 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
               </button>
             </div>
             <p className="mt-2 text-xs text-brand-muted">{realtimeMessage}</p>
-            {realtimeStatus === 'fallback' ? (
-              <p className="mt-1 text-[11px] text-brand-muted">Realtime mode unavailable, continuing in prototype transcript mode.</p>
-            ) : null}
           </div>
 
           <div className="rounded-md border border-brand-line bg-white p-4">
