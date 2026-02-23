@@ -1,6 +1,36 @@
+'use client';
+
+import { FormEvent, useState } from 'react';
 import Image from 'next/image';
 
 export function Footer() {
+  const [email, setEmail] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [subscribeError, setSubscribeError] = useState('');
+  const [subscribeSuccess, setSubscribeSuccess] = useState('');
+
+  const handleSubscribe = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const normalizedEmail = email.trim();
+    const isValidEmail = normalizedEmail.length > 0 && normalizedEmail.includes('@') && normalizedEmail.includes('.');
+
+    if (!isValidEmail) {
+      setSubscribeSuccess('');
+      setSubscribeError('Please enter a valid work email.');
+      return;
+    }
+
+    setSubscribeError('');
+    setIsSubmitting(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    setIsSubmitting(false);
+    setSubscribeSuccess("Thanks for subscribing. We'll send updates soon.");
+    setEmail('');
+  };
+
   return (
     <footer className="mt-10 border-t border-brand-line bg-[#f2f3f0] text-brand-ink">
       <section className="border-b border-brand-line bg-[radial-gradient(circle_at_top_left,_#f5f5f3_0,_#f2f3f0_40%,_#eceeeb_100%)] py-14">
@@ -11,7 +41,7 @@ export function Footer() {
               Receive practical updates for diligence, leadership risk, and hold-period execution.
             </p>
           </div>
-          <form className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <form className="grid grid-cols-1 gap-3 sm:grid-cols-2" onSubmit={handleSubscribe}>
             <input
               aria-label="First Name"
               className="h-11 rounded-md border border-[#d4d8d1] bg-white px-3 text-sm text-brand-ink outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
@@ -24,6 +54,12 @@ export function Footer() {
             />
             <input
               aria-label="Email"
+              value={email}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                setSubscribeError('');
+                if (subscribeSuccess) setSubscribeSuccess('');
+              }}
               className="h-11 rounded-md border border-[#d4d8d1] bg-white px-3 text-sm text-brand-ink outline-none focus-visible:ring-2 focus-visible:ring-brand-green sm:col-span-2"
               placeholder="Email"
             />
@@ -43,11 +79,16 @@ export function Footer() {
               placeholder="State"
             />
             <button
-              type="button"
-              className="mt-1 h-11 rounded-md border border-brand-green bg-white px-5 text-sm font-medium text-brand-ink transition-colors hover:bg-brand-greenTint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green sm:w-fit"
+              type="submit"
+              disabled={isSubmitting}
+              className="mt-1 h-11 rounded-md border border-brand-green bg-white px-5 text-sm font-medium text-brand-ink transition-colors hover:bg-brand-greenTint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:opacity-70 sm:w-fit"
             >
-              Subscribe
+              {isSubmitting ? 'Subscribing...' : 'Subscribe'}
             </button>
+            <div className="min-h-[20px] sm:col-span-2">
+              {subscribeError ? <p className="text-xs text-[#af3f33]">{subscribeError}</p> : null}
+              {subscribeSuccess ? <p className="text-xs text-brand-green">{subscribeSuccess}</p> : null}
+            </div>
           </form>
         </div>
       </section>

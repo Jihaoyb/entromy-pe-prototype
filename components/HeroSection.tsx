@@ -12,6 +12,8 @@ export function HeroSection() {
           <div className="mt-8 flex flex-wrap gap-3">
             <a
               href={heroContent.primaryCta.href}
+              target="_blank"
+              rel="noopener noreferrer"
               className="inline-flex h-12 items-center gap-2 rounded-md bg-brand-green px-8 text-[13px] font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
             >
               <Image src="/mail.svg" alt="" width={14} height={14} className="h-3.5 w-3.5 object-contain" />

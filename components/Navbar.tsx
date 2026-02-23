@@ -1,5 +1,6 @@
 import Image from 'next/image';
 import { navLinks } from '@/data/pageContent';
+import { CALENDLY_URL } from '@/data/siteConfig';
 
 export function Navbar() {
   return (
@@ -24,7 +25,9 @@ export function Navbar() {
           </nav>
 
           <a
-            href="#cta"
+            href={CALENDLY_URL}
+            target="_blank"
+            rel="noopener noreferrer"
             className="inline-flex h-10 items-center rounded-md bg-brand-green px-4 text-[13px] font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green md:h-11 md:px-7"
           >
             <Image src="/mail.svg" alt="" width={14} height={14} className="mr-2 h-3.5 w-3.5 object-contain" />

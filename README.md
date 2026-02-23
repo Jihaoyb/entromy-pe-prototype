@@ -13,15 +13,18 @@ This project is a **Next.js + TypeScript + Tailwind CSS** one-page prototype tha
 - Copy rewritten for **deal partners, operating partners, and portfolio ops teams**
 - Messaging focused on diligence speed, leadership risk visibility, hold-period execution, and decision confidence
 - Hero secondary CTA now links directly to the Agent prototype flow for faster concept discovery
+- All **Book Demo** actions now open Calendly in a new tab
+- Specialist escalation now routes to Calendly for live session booking
 - Added/expanded the prototype feature:
   - Ask a portfolio question
   - Receive a mocked advisor-style response
-  - Escalate to either an instant AI video agent flow or a specialist 10-minute call flow
+  - Escalate to either an instant AI video agent flow or a Calendly specialist booking flow
 
 ## Prototype vs Production
 ### Prototype/mock behavior
 - Ask responses are simulated in the UI (no backend or LLM API call yet)
-- Video modal scheduling choices are simulated (no meeting provider integration)
+- AI video agent modal is a frontend-only concept (no live media integration)
+- Newsletter subscribe flow is frontend-only with validation/loading/success states
 
 ### Production-ready baseline
 - Reusable section/component architecture
@@ -47,7 +50,7 @@ npm run dev
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/BenefitCard.tsx`
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/ValueCreationWorkflow.tsx`
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/AgentVideoModule.tsx`
-- `/Users/jihaoy/dev/entromy-pe-prototype/components/VideoChatModal.tsx`
+- `/Users/jihaoy/dev/entromy-pe-prototype/components/AiVideoAgentModal.tsx`
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/Footer.tsx`
 
 ## Where To Edit Copy
@@ -57,8 +60,10 @@ npm run dev
   - `/Users/jihaoy/dev/entromy-pe-prototype/components/ValueCreationWorkflow.tsx`
 - Agent prompt chips and mocked response logic:
   - `/Users/jihaoy/dev/entromy-pe-prototype/components/AgentVideoModule.tsx`
-- Modal escalation language:
-  - `/Users/jihaoy/dev/entromy-pe-prototype/components/VideoChatModal.tsx`
+- AI video prototype modal language:
+  - `/Users/jihaoy/dev/entromy-pe-prototype/components/AiVideoAgentModal.tsx`
+- Shared booking URL:
+  - `/Users/jihaoy/dev/entromy-pe-prototype/data/siteConfig.ts`
 
 ## Assets In `/public`
 - Brand: `company-logo.png`, `browser_tab.png`
@@ -68,5 +73,5 @@ npm run dev
 
 ## Suggested Next Steps
 1. Connect Ask flow to a real advisor model/API and include source-cited recommendations.
-2. Integrate real scheduling + video provider APIs for specialist escalation.
+2. Replace the placeholder Calendly URL with your production booking link and routing logic.
 3. Add auth + workspace context for portfolio-specific recommendations.

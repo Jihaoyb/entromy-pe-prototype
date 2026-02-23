@@ -1,3 +1,5 @@
+import { CALENDLY_URL } from '@/data/siteConfig';
+
 export const navLinks = [
   { label: 'Solutions', href: '#capabilities', hasCaret: true },
   { label: 'Why Entromy', href: '#why-entromy', hasCaret: true },
@@ -10,7 +12,7 @@ export const heroContent = {
   title: 'Faster decisions across your PE portfolio',
   subtitle:
     'Help deal and operating teams spot leadership risk, execution drag, and value-creation priorities early.',
-  primaryCta: { label: 'Book Demo', href: '#cta' },
+  primaryCta: { label: 'Book Demo', href: CALENDLY_URL },
   secondaryCta: { label: 'Try the Agent Prototype', href: '#agent-module' }
 };
 

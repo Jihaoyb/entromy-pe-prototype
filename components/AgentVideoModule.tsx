@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { AiVideoAgentModal } from '@/components/AiVideoAgentModal';
-import { VideoChatModal } from '@/components/VideoChatModal';
+import { CALENDLY_URL } from '@/data/siteConfig';
 
 const suggestedPrompts = [
   'How should we de-risk a new CEO transition?',
@@ -70,7 +70,6 @@ export function AgentVideoModule() {
   const [isLoading, setIsLoading] = useState(false);
   const [hasResponse, setHasResponse] = useState(false);
   const [responseText, setResponseText] = useState('');
-  const [specialistModalOpen, setSpecialistModalOpen] = useState(false);
   const [aiVideoModalOpen, setAiVideoModalOpen] = useState(false);
 
   const canAsk = question.trim().length > 0 && !isLoading;
@@ -91,8 +90,8 @@ export function AgentVideoModule() {
   };
 
   const handleEscalateFromAiVideo = () => {
+    window.open(CALENDLY_URL, '_blank', 'noopener,noreferrer');
     setAiVideoModalOpen(false);
-    setSpecialistModalOpen(true);
   };
 
   return (
@@ -175,17 +174,19 @@ export function AgentVideoModule() {
                   >
                     Start AI video agent (2 min)
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setSpecialistModalOpen(true)}
+                  <a
+                    href={CALENDLY_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="rounded-md border border-brand-green px-4 py-2.5 text-[13px] font-medium text-brand-green transition-colors hover:bg-brand-greenTint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
                   >
                     Talk to a specialist (10 min)
-                  </button>
+                  </a>
                 </div>
                 <div className="mt-2 space-y-1 text-xs text-brand-muted">
                   <p>Best for a quick walkthrough or clarification: AI video agent.</p>
                   <p>Best for deal-specific questions, portfolio context, or urgent operating decisions: specialist call.</p>
+                  <p>Opens Calendly to request a live specialist session.</p>
                 </div>
               </>
             ) : null}
@@ -199,7 +200,6 @@ export function AgentVideoModule() {
         onClose={() => setAiVideoModalOpen(false)}
         onEscalateToSpecialist={handleEscalateFromAiVideo}
       />
-      <VideoChatModal open={specialistModalOpen} onClose={() => setSpecialistModalOpen(false)} />
     </section>
   );
 }

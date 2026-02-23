@@ -7,6 +7,7 @@ import { Navbar } from '@/components/Navbar';
 import { SectionBlock } from '@/components/SectionBlock';
 import { ValueCreationWorkflow } from '@/components/ValueCreationWorkflow';
 import { benefits, ctaContent, maximizeSection, whyChoose } from '@/data/pageContent';
+import { CALENDLY_URL } from '@/data/siteConfig';
 
 export default function Home() {
   return (
@@ -59,10 +60,15 @@ export default function Home() {
           <div className="h-1.5 w-16 rounded-full bg-brand-green" />
           <h2 className="max-w-4xl text-[30px] font-medium leading-[1.25] md:text-[36px]">{ctaContent.title}</h2>
           <p className="body-copy max-w-3xl">{ctaContent.body}</p>
-          <button className="inline-flex h-12 items-center rounded-md bg-brand-green px-8 text-[13px] font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green">
+          <a
+            href={CALENDLY_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex h-12 items-center rounded-md bg-brand-green px-8 text-[13px] font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
+          >
             <Image src="/statistic.svg" alt="" width={14} height={14} className="mr-2 h-3.5 w-3.5 object-contain" />
             {ctaContent.button}
-          </button>
+          </a>
           <div className="section-divider" />
         </div>
       </section>
