@@ -186,8 +186,26 @@ function modeToSessionMode(mode: InteractionMode): AgentSessionMode {
   return mode === 'voice' ? 'audio' : 'video';
 }
 
+function getInitialModeFromSession(mode: AgentSessionMode): InteractionMode {
+  return mode === 'video' ? 'video' : 'voice';
+}
+
+function buildTavusEmbedUrl(url: string) {
+  if (!url) return '';
+
+  try {
+    const parsed = new URL(url);
+    // Best-effort embed flags; unsupported params are ignored by Tavus.
+    parsed.searchParams.set('embed', 'true');
+    parsed.searchParams.set('minimal_ui', 'true');
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onEscalateToSpecialist }: AiVideoAgentModalProps) {
-  const [selectedMode, setSelectedMode] = useState<InteractionMode>('voice');
+  const [selectedMode, setSelectedMode] = useState<InteractionMode>(() => getInitialModeFromSession(session.currentMode));
   const [isFollowUpLoading, setIsFollowUpLoading] = useState(false);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('prototype');
   const [sessionPhase, setSessionPhase] = useState<SessionPhase>('prototype');
@@ -204,6 +222,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const speakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const modalInitRef = useRef(false);
 
   const bargeInAudioContextRef = useRef<AudioContext | null>(null);
   const bargeInFrameRef = useRef<number | null>(null);
@@ -220,6 +239,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
   }, [realtimeStatus]);
 
   const showingTavusFrame = tavusStatus === 'live' && Boolean(tavusConversationUrl);
+  const tavusEmbedUrl = useMemo(() => buildTavusEmbedUrl(tavusConversationUrl), [tavusConversationUrl]);
 
   const updateSession = useCallback(
     (updater: (previous: AgentSessionContext) => AgentSessionContext) => {
@@ -768,6 +788,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
 
   useEffect(() => {
     if (!open) {
+      modalInitRef.current = false;
       cleanupRealtime();
       setIsFollowUpLoading(false);
       setRealtimeStatus('prototype');
@@ -777,7 +798,10 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
       return;
     }
 
-    setSelectedMode(session.currentMode === 'video' ? 'video' : 'voice');
+    if (!modalInitRef.current) {
+      setSelectedMode(getInitialModeFromSession(session.currentMode));
+      modalInitRef.current = true;
+    }
     updateSession((previous) => ensureSessionIntroMessage(previous, initialAssistantLine));
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -891,14 +915,18 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="grid gap-4 lg:grid-cols-[1.02fr_0.98fr]">
             <div className="rounded-md border border-brand-line bg-brand-panel p-4">
-              <div className="relative aspect-[16/10] overflow-hidden rounded-md border border-brand-line bg-[#1f2520]">
+              <div className={`relative overflow-hidden rounded-md border border-brand-line bg-[#1f2520] ${selectedMode === 'video' ? 'aspect-[4/3] md:aspect-[16/10]' : 'aspect-[16/10]'}`}>
                 {selectedMode === 'video' && showingTavusFrame ? (
-                  <iframe
-                    src={tavusConversationUrl}
-                    title="Tavus Video Agent"
-                    className="h-full w-full border-0"
-                    allow="camera; microphone; autoplay; clipboard-write"
-                  />
+                  <div className="h-full w-full overflow-hidden">
+                    {/* Tavus pre-join UI can be taller than this container; scale keeps ready controls visible without inner scrolling. */}
+                    <iframe
+                      src={tavusEmbedUrl}
+                      title="Tavus Video Agent"
+                      className="h-[116%] w-[116%] origin-top-left scale-[0.862] border-0"
+                      allow="camera; microphone; autoplay; clipboard-write"
+                      scrolling="no"
+                    />
+                  </div>
                 ) : (
                   <div className="flex h-full items-center justify-center text-center">
                     <div>
