@@ -17,10 +17,11 @@ This project is a **Next.js + TypeScript + Tailwind CSS** one-page prototype tha
 - Specialist escalation now routes to Calendly for live session booking
 - Added backend API routes for triage (`/api/triage`) and subscribe (`/api/subscribe`)
 - Added a realtime session bootstrap route (`/api/realtime-session`) for ephemeral AI audio sessions
+- Added a Tavus session route (`/api/tavus-session`) for server-created video avatar conversations
 - Added/expanded the prototype feature:
   - Ask a portfolio question
   - Receive a concise PE-style response from server-side AI (with fallback mode)
-  - Escalate to either an instant AI video agent flow or a Calendly specialist booking flow
+  - Escalate to either a Tavus-powered video agent flow (when enabled) or a Calendly specialist booking flow
 
 ## Prototype vs Production
 ### Prototype/mock behavior
@@ -31,6 +32,10 @@ This project is a **Next.js + TypeScript + Tailwind CSS** one-page prototype tha
 - When unavailable, the modal automatically falls back to prototype transcript mode.
 - Feature flag to enable in Vercel: `NEXT_PUBLIC_ENABLE_REALTIME_AGENT=true` (client-side env var, required).
 - Fallback messages now include a stage hint, for example: `Realtime unavailable (session setup failed). Using prototype mode.`
+### Tavus video status
+- Tavus video avatar mode is feature-flagged and optional.
+- If Tavus is disabled or not configured, the modal falls back to the current prototype/audio mode without breaking transcript or escalation flows.
+- Feature flag to enable in Vercel: `NEXT_PUBLIC_ENABLE_TAVUS_VIDEO_AGENT=true` (client-side env var, optional).
 
 ### Production-ready baseline
 - Reusable section/component architecture
@@ -58,6 +63,11 @@ OPENAI_MODEL=gpt-4.1-mini
 OPENAI_REALTIME_MODEL=gpt-realtime
 OPENAI_REALTIME_VOICE=marin
 NEXT_PUBLIC_ENABLE_REALTIME_AGENT=true
+NEXT_PUBLIC_ENABLE_TAVUS_VIDEO_AGENT=true
+TAVUS_API_KEY=your_tavus_api_key
+TAVUS_BASE_URL=https://tavusapi.com
+TAVUS_PERSONA_ID=your_persona_id
+TAVUS_REPLICA_ID=your_replica_id_optional
 SUBSCRIBE_MODE=log
 NEXT_PUBLIC_CALENDLY_URL=https://calendly.com/entromy-team/initial-demo
 ```
@@ -67,10 +77,16 @@ NEXT_PUBLIC_CALENDLY_URL=https://calendly.com/entromy-team/initial-demo
 - `OPENAI_REALTIME_MODEL` (optional): realtime model for `/api/realtime-session`.
 - `OPENAI_REALTIME_VOICE` (optional): realtime voice profile.
 - `NEXT_PUBLIC_ENABLE_REALTIME_AGENT`: enables the client realtime connect path in the AI modal.
+- `NEXT_PUBLIC_ENABLE_TAVUS_VIDEO_AGENT`: enables Tavus video avatar connect in the AI modal.
+- `TAVUS_API_KEY`: required for `/api/tavus-session` server calls.
+- `TAVUS_BASE_URL` (optional): defaults to `https://tavusapi.com`.
+- `TAVUS_PERSONA_ID`: required Tavus persona used for the video session.
+- `TAVUS_REPLICA_ID` (optional): Tavus replica override if your persona requires it.
 - `SUBSCRIBE_MODE` (optional): `log` (default) logs newsletter signups server-side.
 - `NEXT_PUBLIC_CALENDLY_URL` (optional): overrides the default shared Calendly link.
 
 If `OPENAI_API_KEY` is missing or AI calls fail, `/api/triage` returns a strong fallback response with `mode: "fallback"` so the demo remains usable.
+If you are testing Tavus locally, set the Tavus env vars in `.env.local`; for deployed environments (for example Vercel), add the same vars in project environment settings.
 
 ## API Routes
 - `POST /api/triage`
@@ -89,6 +105,10 @@ If `OPENAI_API_KEY` is missing or AI calls fail, `/api/triage` returns a strong 
 - `POST /api/events`
   - Lightweight demo instrumentation endpoint (logs allowed UI events server-side).
   - No DB persistence; useful for validating interaction flow during demos.
+- `POST /api/tavus-session`
+  - Creates a Tavus conversation session server-side and returns only client-safe fields.
+  - Accepts optional triage context so the video interaction continues the same question.
+  - Never exposes `TAVUS_API_KEY` to the browser.
 
 ## Key Components
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/Navbar.tsx`

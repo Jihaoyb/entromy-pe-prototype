@@ -4,6 +4,9 @@ export type DemoEventName =
   | 'agent_started'
   | 'audio_connected'
   | 'fallback_triggered'
+  | 'video_agent_connect_requested'
+  | 'video_agent_connected'
+  | 'video_agent_fallback_triggered'
   | 'escalated_to_specialist'
   | 'subscribe_submitted';
 
