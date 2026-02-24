@@ -7,8 +7,8 @@ export function HeroSection() {
       <div className="grid items-center gap-7 md:gap-8 xl:grid-cols-[0.92fr_1.08fr] xl:gap-10">
         <div className="max-w-xl">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-brand-green">{heroContent.eyebrow}</p>
-          <h1 className="mt-4 text-[34px] font-medium leading-[1.18] text-brand-ink md:text-[40px] xl:text-[45px]">{heroContent.title}</h1>
-          <p className="mt-6 max-w-xl text-[15px] leading-[1.62] text-brand-muted">{heroContent.subtitle}</p>
+          <h1 className="mt-4 text-[32px] font-medium leading-[1.2] text-brand-ink md:text-[38px] xl:text-[42px]">{heroContent.title}</h1>
+          <p className="mt-5 max-w-lg text-[15px] leading-[1.58] text-brand-muted">{heroContent.subtitle}</p>
           <div className="mt-8 flex flex-wrap gap-3">
             <a
               href={heroContent.primaryCta.href}

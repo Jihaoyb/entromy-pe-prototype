@@ -115,7 +115,7 @@ export function AgentVideoModule() {
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-muted">Prototype Concept</p>
           <h2 className="mt-2 text-2xl font-medium leading-[1.25] text-brand-ink md:text-3xl">Talk to an Entromy Agent</h2>
           <p className="mt-3 body-copy">
-            Ask a portfolio question, get a fast recommendation, then escalate to a specialist video session when needed.
+            Ask a portfolio question, get a fast recommendation, then continue in a live voice or video session when needed.
           </p>
         </div>
 
@@ -193,7 +193,7 @@ export function AgentVideoModule() {
                     }}
                     className="rounded-md bg-brand-green px-4 py-2.5 text-[13px] font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
                   >
-                    Start AI video agent (2 min)
+                    Open live agent session
                   </button>
                   <a
                     href={CALENDLY_URL}
@@ -205,8 +205,8 @@ export function AgentVideoModule() {
                   </a>
                 </div>
                 <div className="mt-2 space-y-1 text-xs text-brand-muted">
-                  <p>Best for a quick walkthrough or clarification: AI video agent.</p>
-                  <p>Best for deal-specific questions, portfolio context, or urgent operating decisions: specialist call.</p>
+                  <p>Use live agent mode for quick walkthroughs and clarifications.</p>
+                  <p>Use specialist escalation for deal-specific decisions, portfolio context, or urgent operating calls.</p>
                   <p>Opens Calendly to request a live specialist session.</p>
                 </div>
               </>

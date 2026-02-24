@@ -31,6 +31,8 @@ interface AiVideoAgentModalProps {
   onEscalateToSpecialist: () => void;
 }
 
+type InteractionMode = 'voice' | 'video';
+
 const followUpOptions = ['Show me a 30-day plan', 'What should I validate first?', 'When should I escalate this?'] as const;
 const realtimeFeatureEnabled = process.env.NEXT_PUBLIC_ENABLE_REALTIME_AGENT === 'true';
 const tavusFeatureEnabled = process.env.NEXT_PUBLIC_ENABLE_TAVUS_VIDEO_AGENT === 'true';
@@ -96,19 +98,6 @@ type RealtimeFailureStage =
   | 'sdp handshake failed'
   | 'data channel failed'
   | 'unknown';
-
-interface SessionStateBadge {
-  key: SessionPhase;
-  label: string;
-}
-
-const sessionStateBadges: SessionStateBadge[] = [
-  { key: 'connecting', label: 'Connecting' },
-  { key: 'listening', label: 'Listening' },
-  { key: 'thinking', label: 'Thinking' },
-  { key: 'responding', label: 'Responding' },
-  { key: 'fallback', label: 'Fallback mode' }
-];
 
 class RealtimeFlowError extends Error {
   stageHint: RealtimeFailureStage;
@@ -193,14 +182,17 @@ function sourceFromMode(mode: AgentSessionMode): AgentTranscriptSource {
   return 'fallback';
 }
 
+function modeToSessionMode(mode: InteractionMode): AgentSessionMode {
+  return mode === 'voice' ? 'audio' : 'video';
+}
+
 export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onEscalateToSpecialist }: AiVideoAgentModalProps) {
+  const [selectedMode, setSelectedMode] = useState<InteractionMode>('voice');
   const [isFollowUpLoading, setIsFollowUpLoading] = useState(false);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('prototype');
   const [sessionPhase, setSessionPhase] = useState<SessionPhase>('prototype');
   const [realtimeMessage, setRealtimeMessage] = useState('Prototype transcript mode is active.');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
-  const [hasCameraPreview, setHasCameraPreview] = useState(false);
-  const [isCameraLoading, setIsCameraLoading] = useState(false);
   const [tavusStatus, setTavusStatus] = useState<TavusStatus>('idle');
   const [tavusMessage, setTavusMessage] = useState('Video avatar is available when Tavus is enabled.');
   const [tavusConversationUrl, setTavusConversationUrl] = useState('');
@@ -209,16 +201,23 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const microphoneStreamRef = useRef<MediaStream | null>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-  const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const speakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
 
-  const activeBadgeKey = useMemo<SessionPhase | null>(() => {
-    if (sessionPhase === 'prototype') return null;
-    return sessionPhase;
-  }, [sessionPhase]);
+  const bargeInAudioContextRef = useRef<AudioContext | null>(null);
+  const bargeInFrameRef = useRef<number | null>(null);
+  const lastBargeInAtRef = useRef(0);
+  const isAiSpeakingRef = useRef(false);
+  const realtimeStatusRef = useRef<RealtimeStatus>('prototype');
+
+  useEffect(() => {
+    isAiSpeakingRef.current = isAiSpeaking;
+  }, [isAiSpeaking]);
+
+  useEffect(() => {
+    realtimeStatusRef.current = realtimeStatus;
+  }, [realtimeStatus]);
 
   const showingTavusFrame = tavusStatus === 'live' && Boolean(tavusConversationUrl);
 
@@ -255,6 +254,92 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
     [updateSession]
   );
 
+  const stopBargeInMonitor = useCallback(() => {
+    if (bargeInFrameRef.current) {
+      window.cancelAnimationFrame(bargeInFrameRef.current);
+      bargeInFrameRef.current = null;
+    }
+
+    if (bargeInAudioContextRef.current) {
+      void bargeInAudioContextRef.current.close();
+      bargeInAudioContextRef.current = null;
+    }
+  }, []);
+
+  const handleBargeIn = useCallback(() => {
+    if (dataChannelRef.current?.readyState === 'open') {
+      try {
+        // Best-effort provider interruption: cancel active response generation when user barges in.
+        dataChannelRef.current.send(JSON.stringify({ type: 'response.cancel' }));
+      } catch (error) {
+        console.warn('[AiVideoAgentModal] response.cancel failed during barge-in:', error);
+      }
+    }
+
+    if (remoteAudioRef.current) {
+      // App-level fallback interruption: temporarily mute output so user can take the floor.
+      remoteAudioRef.current.muted = true;
+      window.setTimeout(() => {
+        if (remoteAudioRef.current) remoteAudioRef.current.muted = false;
+      }, 350);
+    }
+
+    setIsAiSpeaking(false);
+    setSessionPhase('listening');
+    setRealtimeMessage('Listening for your next point...');
+    appendSystemNote('Interrupted response. Listening to user.', 'audio');
+  }, [appendSystemNote]);
+
+  const startBargeInMonitor = useCallback(
+    (stream: MediaStream) => {
+      const AudioContextClass = window.AudioContext;
+      if (!AudioContextClass) return;
+
+      stopBargeInMonitor();
+
+      try {
+        const context = new AudioContextClass();
+        const sourceNode = context.createMediaStreamSource(stream);
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.2;
+
+        sourceNode.connect(analyser);
+
+        const buffer = new Uint8Array(analyser.fftSize);
+        bargeInAudioContextRef.current = context;
+
+        const tick = () => {
+          analyser.getByteTimeDomainData(buffer);
+
+          let amplitudeSum = 0;
+          for (let index = 0; index < buffer.length; index += 1) {
+            amplitudeSum += Math.abs((buffer[index] - 128) / 128);
+          }
+          const averageAmplitude = amplitudeSum / buffer.length;
+          const now = Date.now();
+
+          if (
+            realtimeStatusRef.current === 'live' &&
+            isAiSpeakingRef.current &&
+            averageAmplitude > 0.07 &&
+            now - lastBargeInAtRef.current > 1100
+          ) {
+            lastBargeInAtRef.current = now;
+            handleBargeIn();
+          }
+
+          bargeInFrameRef.current = window.requestAnimationFrame(tick);
+        };
+
+        bargeInFrameRef.current = window.requestAnimationFrame(tick);
+      } catch (error) {
+        console.warn('[AiVideoAgentModal] Unable to start barge-in monitor:', error);
+      }
+    },
+    [handleBargeIn, stopBargeInMonitor]
+  );
+
   const clearTranscript = () => {
     const introMessage = createTranscriptMessage('assistant', initialAssistantLine, 'fallback');
     updateSession((previous) => ({
@@ -280,6 +365,8 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
       speakingTimerRef.current = null;
     }
 
+    stopBargeInMonitor();
+
     if (dataChannelRef.current) {
       dataChannelRef.current.close();
       dataChannelRef.current = null;
@@ -295,15 +382,6 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
       microphoneStreamRef.current = null;
     }
 
-    if (cameraStreamRef.current) {
-      cameraStreamRef.current.getTracks().forEach((track) => track.stop());
-      cameraStreamRef.current = null;
-    }
-
-    if (videoElementRef.current) {
-      videoElementRef.current.srcObject = null;
-    }
-
     if (remoteAudioRef.current) {
       remoteAudioRef.current.pause();
       remoteAudioRef.current.srcObject = null;
@@ -311,39 +389,43 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
     }
 
     setIsAiSpeaking(false);
-    setHasCameraPreview(false);
-  }, []);
+  }, [stopBargeInMonitor]);
 
-  const switchToFallbackMode = (stage: RealtimeFailureStage, detail?: string) => {
-    cleanupRealtime();
-    setRealtimeStatus('fallback');
-    setSessionPhase('fallback');
-    const fallbackMessage = buildRealtimeFallbackMessage(stage, detail);
-    setRealtimeMessage(fallbackMessage);
-    updateSessionMode('fallback', stage);
-    appendSystemNote(`Audio mode unavailable (${stage}). Continuing in prototype mode.`, 'fallback');
-    trackDemoEvent('fallback_triggered', { stage });
-  };
-
-  const switchVideoFallbackMode = (stage: string, detail?: string) => {
-    const safeStage = sanitizeDetail(stage);
-    const safeDetail = sanitizeDetail(detail);
-
-    setTavusStatus('fallback');
-    setTavusMessage(`Video agent unavailable (${safeStage}${safeDetail ? `: ${safeDetail}` : ''}). Using current prototype/audio mode.`);
-
-    if (realtimeStatus === 'live') {
-      updateSessionMode('audio', safeStage);
-      appendSystemNote('Video avatar unavailable. Continuing in audio mode.', 'fallback');
-      setSessionPhase('listening');
-    } else {
-      updateSessionMode('fallback', safeStage);
-      appendSystemNote('Video avatar unavailable. Continuing in prototype mode.', 'fallback');
+  const switchToFallbackMode = useCallback(
+    (stage: RealtimeFailureStage, detail?: string) => {
+      cleanupRealtime();
+      setRealtimeStatus('fallback');
       setSessionPhase('fallback');
-    }
+      setRealtimeMessage(buildRealtimeFallbackMessage(stage, detail));
+      updateSessionMode('fallback', stage);
+      appendSystemNote(`Voice mode unavailable (${stage}). Continuing in backup mode.`, 'fallback');
+      trackDemoEvent('fallback_triggered', { stage });
+    },
+    [appendSystemNote, cleanupRealtime, updateSessionMode]
+  );
 
-    trackDemoEvent('video_agent_fallback_triggered', { stage: safeStage });
-  };
+  const switchVideoFallbackMode = useCallback(
+    (stage: string, detail?: string) => {
+      const safeStage = sanitizeDetail(stage);
+      const safeDetail = sanitizeDetail(detail);
+
+      setTavusStatus('fallback');
+      setTavusMessage(`Video avatar unavailable (${safeStage}${safeDetail ? `: ${safeDetail}` : ''}). Using backup mode.`);
+
+      if (realtimeStatusRef.current === 'live') {
+        updateSessionMode('audio', safeStage);
+        appendSystemNote('Video avatar unavailable. Continuing in voice mode.', 'fallback');
+        setSessionPhase('listening');
+      } else {
+        updateSessionMode('fallback', safeStage);
+        appendSystemNote('Video avatar unavailable. Continuing in backup mode.', 'fallback');
+        setSessionPhase('fallback');
+      }
+
+      trackDemoEvent('video_agent_fallback_triggered', { stage: safeStage });
+    },
+    [appendSystemNote, updateSessionMode]
+  );
 
   const handleCloseModal = useCallback(() => {
     cleanupRealtime();
@@ -352,7 +434,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
     onClose();
   }, [cleanupRealtime, onClose, resetTavusState, updateSessionMode]);
 
-  const handleConnectVideoAgent = async () => {
+  const handleConnectVideoAgent = useCallback(async () => {
     if (tavusStatus === 'connecting' || tavusStatus === 'live') return;
 
     if (!tavusFeatureEnabled) {
@@ -363,7 +445,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
     trackDemoEvent('video_agent_connect_requested', { source: 'ai-video-modal' });
     setTavusStatus('connecting');
     setSessionPhase('connecting');
-    setTavusMessage('Starting Tavus video agent session...');
+    setTavusMessage('Connecting video avatar...');
 
     try {
       const response = await fetch('/api/tavus-session', {
@@ -398,24 +480,25 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
       setTavusStatus('live');
       setTavusConversationUrl(data.conversationUrl);
       setTavusConversationId(data.conversationId);
-      setTavusMessage('Video avatar connected. Continue your session below.');
+      setTavusMessage('Video avatar connected');
       setSessionPhase('listening');
       updateSessionMode('video');
-
-      if (session.currentMode === 'audio') {
-        appendSystemNote('Switched to video avatar mode. Context preserved.', 'video');
-      } else {
-        appendSystemNote('Video avatar mode connected. Context preserved.', 'video');
-      }
+      appendSystemNote('Switched to Video Avatar mode. Context preserved.', 'video');
 
       trackDemoEvent('video_agent_connected', { source: 'ai-video-modal', hasConversationId: Boolean(data.conversationId) });
     } catch (error) {
       console.error('[AiVideoAgentModal][tavus] failed to connect:', error);
       switchVideoFallbackMode('session_setup', 'Unexpected network error');
     }
-  };
+  }, [
+    appendSystemNote,
+    session,
+    switchVideoFallbackMode,
+    tavusStatus,
+    updateSessionMode
+  ]);
 
-  const handleStartRealtimeSession = async () => {
+  const handleStartRealtimeSession = useCallback(async () => {
     if (realtimeStatus === 'connecting' || realtimeStatus === 'live') return;
 
     if (!realtimeFeatureEnabled) {
@@ -431,7 +514,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
     trackDemoEvent('agent_started', { source: 'ai-video-modal' });
     setRealtimeStatus('connecting');
     setSessionPhase('connecting');
-    setRealtimeMessage('Requesting microphone access and connecting to AI...');
+    setRealtimeMessage('Connecting voice agent...');
 
     try {
       let micStream: MediaStream;
@@ -446,6 +529,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
       }
 
       microphoneStreamRef.current = micStream;
+      startBargeInMonitor(micStream);
 
       const sessionResponse = await fetch('/api/realtime-session', {
         method: 'POST',
@@ -509,13 +593,22 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
       dataChannel.onopen = () => {
         setRealtimeStatus('live');
         setSessionPhase('listening');
-        setRealtimeMessage('Live audio connected. Speak naturally to the AI agent.');
+        setRealtimeMessage('Voice agent connected');
         updateSessionMode('audio');
+        appendSystemNote('Switched to Voice Agent mode. Context preserved.', 'audio');
 
-        if (session.currentMode === 'video') {
-          appendSystemNote('Switched to audio mode. Context preserved.', 'audio');
-        } else {
-          appendSystemNote('AI agent session started in audio mode.', 'audio');
+        // Best-effort provider setting: enable server-side turn detection for more natural handoffs.
+        try {
+          dataChannel.send(
+            JSON.stringify({
+              type: 'session.update',
+              session: {
+                turn_detection: { type: 'server_vad' }
+              }
+            })
+          );
+        } catch {
+          // If unsupported by provider/runtime, app-level barge-in fallback still applies.
         }
 
         trackDemoEvent('audio_connected', { source: 'ai-video-modal' });
@@ -537,7 +630,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
             speakingTimerRef.current = setTimeout(() => {
               setIsAiSpeaking(false);
               setSessionPhase('listening');
-            }, 400);
+            }, 420);
           }
 
           const text = extractRealtimeText(payload);
@@ -583,32 +676,39 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
       console.error('[AiVideoAgentModal][realtime] failed with unknown error', error);
       switchToFallbackMode('unknown');
     }
+  }, [
+    appendSharedMessage,
+    appendSystemNote,
+    realtimeStatus,
+    session.originalQuestion,
+    startBargeInMonitor,
+    switchToFallbackMode,
+    updateSessionMode
+  ]);
+
+  const handleModeChange = (mode: InteractionMode) => {
+    if (mode === selectedMode) return;
+    setSelectedMode(mode);
+
+    if (mode === 'voice') {
+      appendSystemNote('Switched to Voice Agent mode. Context preserved.', 'audio');
+    } else {
+      appendSystemNote('Switched to Video Avatar mode. Context preserved.', 'video');
+    }
   };
 
-  const handleEnableCameraPreview = async () => {
-    if (isCameraLoading || hasCameraPreview || !navigator.mediaDevices?.getUserMedia || showingTavusFrame) return;
-
-    setIsCameraLoading(true);
-
-    try {
-      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      cameraStreamRef.current = cameraStream;
-      if (videoElementRef.current) {
-        videoElementRef.current.srcObject = cameraStream;
-      }
-      setHasCameraPreview(true);
-    } catch (error) {
-      console.error('[AiVideoAgentModal] Camera preview request failed:', error);
-      setRealtimeMessage('Camera preview is unavailable. Audio session can still continue.');
-    } finally {
-      setIsCameraLoading(false);
+  const handlePrimaryStart = async () => {
+    if (selectedMode === 'voice') {
+      await handleStartRealtimeSession();
+      return;
     }
+    await handleConnectVideoAgent();
   };
 
   const handleFollowUp = async (option: (typeof followUpOptions)[number]) => {
     if (isFollowUpLoading) return;
 
-    const activeSource = sourceFromMode(session.currentMode);
+    const activeSource = sourceFromMode(session.currentMode || modeToSessionMode(selectedMode));
     appendSharedMessage('user', option, activeSource);
 
     if (realtimeStatus === 'live' && dataChannelRef.current?.readyState === 'open') {
@@ -677,6 +777,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
       return;
     }
 
+    setSelectedMode(session.currentMode === 'video' ? 'video' : 'voice');
     updateSession((previous) => ensureSessionIntroMessage(previous, initialAssistantLine));
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -685,13 +786,54 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [cleanupRealtime, handleCloseModal, open, resetTavusState, updateSession]);
+  }, [cleanupRealtime, handleCloseModal, open, resetTavusState, session.currentMode, updateSession]);
 
   useEffect(() => {
     const container = transcriptScrollRef.current;
     if (!container) return;
     container.scrollTop = container.scrollHeight;
   }, [session.transcript, isFollowUpLoading]);
+
+  const statusLine = useMemo(() => {
+    if (selectedMode === 'voice') {
+      if (realtimeStatus === 'connecting') return 'Connecting...';
+      if (realtimeStatus === 'live' && isAiSpeaking) return 'Agent is responding...';
+      if (realtimeStatus === 'live') return 'Voice agent connected';
+      if (realtimeStatus === 'fallback') return 'Using backup mode';
+      return 'Ready to start voice conversation';
+    }
+
+    if (tavusStatus === 'connecting') return 'Connecting...';
+    if (tavusStatus === 'live') return 'Video avatar connected';
+    if (tavusStatus === 'fallback') return 'Using backup mode';
+    return 'Ready to start video avatar conversation';
+  }, [isAiSpeaking, realtimeStatus, selectedMode, tavusStatus]);
+
+  const statusDetail = useMemo(() => {
+    if (selectedMode === 'voice' && realtimeStatus === 'fallback') return realtimeMessage;
+    if (selectedMode === 'video' && tavusStatus === 'fallback') return tavusMessage;
+    if (selectedMode === 'voice' && realtimeStatus === 'live') return 'Speak naturally. You can interrupt the agent at any point.';
+    if (selectedMode === 'video' && tavusStatus === 'live') return 'Video avatar is active with the same session context.';
+    return '';
+  }, [realtimeMessage, realtimeStatus, selectedMode, tavusMessage, tavusStatus]);
+
+  const primaryButtonLabel =
+    selectedMode === 'voice'
+      ? realtimeStatus === 'live'
+        ? 'Voice conversation active'
+        : realtimeStatus === 'connecting'
+          ? 'Starting voice conversation...'
+          : 'Start voice conversation'
+      : tavusStatus === 'live'
+        ? 'Video avatar conversation active'
+        : tavusStatus === 'connecting'
+          ? 'Starting video avatar conversation...'
+          : 'Start video avatar conversation';
+
+  const primaryButtonDisabled =
+    selectedMode === 'voice'
+      ? realtimeStatus === 'connecting' || realtimeStatus === 'live'
+      : tavusStatus === 'connecting' || tavusStatus === 'live';
 
   if (!open) return null;
 
@@ -711,7 +853,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
                 Continue AI agent session
               </h3>
               <p className="mt-1.5 text-sm leading-[1.5] text-brand-muted">
-                Use audio or video avatar mode in the same session. Context and transcript stay shared.
+                Same agent and memory, with either a voice interface or video avatar interface.
               </p>
             </div>
             <button
@@ -724,20 +866,25 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
             </button>
           </div>
 
-          <div className="mt-3 flex flex-wrap gap-2">
-            {sessionStateBadges.map((badge) => {
-              const isActive = badge.key === activeBadgeKey;
-              return (
-                <span
-                  key={badge.key}
-                  className={`rounded-full border px-2.5 py-1 text-[11px] ${
-                    isActive ? 'border-brand-green bg-brand-greenTint text-brand-ink' : 'border-brand-line bg-white text-brand-muted'
-                  }`}
-                >
-                  {badge.label}
-                </span>
-              );
-            })}
+          <div className="mt-4 inline-flex rounded-md border border-brand-line bg-brand-panel p-1">
+            <button
+              type="button"
+              onClick={() => handleModeChange('voice')}
+              className={`rounded px-3 py-1.5 text-xs font-medium transition ${
+                selectedMode === 'voice' ? 'bg-white text-brand-ink shadow-sm' : 'text-brand-muted hover:text-brand-ink'
+              }`}
+            >
+              Voice Agent
+            </button>
+            <button
+              type="button"
+              onClick={() => handleModeChange('video')}
+              className={`rounded px-3 py-1.5 text-xs font-medium transition ${
+                selectedMode === 'video' ? 'bg-white text-brand-ink shadow-sm' : 'text-brand-muted hover:text-brand-ink'
+              }`}
+            >
+              Video Avatar Agent
+            </button>
           </div>
         </div>
 
@@ -745,56 +892,64 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
           <div className="grid gap-4 lg:grid-cols-[1.02fr_0.98fr]">
             <div className="rounded-md border border-brand-line bg-brand-panel p-4">
               <div className="relative aspect-[16/10] overflow-hidden rounded-md border border-brand-line bg-[#1f2520]">
-                {showingTavusFrame ? (
+                {selectedMode === 'video' && showingTavusFrame ? (
                   <iframe
                     src={tavusConversationUrl}
                     title="Tavus Video Agent"
                     className="h-full w-full border-0"
                     allow="camera; microphone; autoplay; clipboard-write"
                   />
-                ) : hasCameraPreview ? (
-                  <video ref={videoElementRef} className="h-full w-full object-cover" autoPlay muted playsInline />
-                ) : null}
+                ) : (
+                  <div className="flex h-full items-center justify-center text-center">
+                    <div>
+                      <p className="text-sm font-medium text-white">{selectedMode === 'voice' ? 'Voice Agent' : 'Video Avatar Agent'}</p>
+                      <p className="mt-1 text-xs text-slate-300">
+                        {selectedMode === 'voice' ? 'Audio-first conversation mode' : 'Live avatar presentation mode'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 <div className="absolute left-3 top-3 inline-flex items-center gap-2 rounded-full bg-black/45 px-2.5 py-1 text-[11px] text-white">
                   <span
                     className={`h-2 w-2 rounded-full ${
-                      tavusStatus === 'live'
+                      (selectedMode === 'voice' && realtimeStatus === 'live') || (selectedMode === 'video' && tavusStatus === 'live')
                         ? 'animate-pulse bg-[#71e440]'
-                        : realtimeStatus === 'live'
-                          ? 'animate-pulse bg-[#71e440]'
-                          : realtimeStatus === 'connecting' || tavusStatus === 'connecting'
-                            ? 'bg-[#d9e85f]'
-                            : 'bg-slate-300'
+                        : (selectedMode === 'voice' && realtimeStatus === 'connecting') || (selectedMode === 'video' && tavusStatus === 'connecting')
+                          ? 'bg-[#d9e85f]'
+                          : 'bg-slate-300'
                     }`}
                   />
-                  <span>
-                    {tavusStatus === 'live'
-                      ? 'AI Agent • Video mode'
-                      : realtimeStatus === 'live'
-                        ? 'AI Agent • Audio mode'
-                        : tavusStatus === 'connecting' || realtimeStatus === 'connecting'
-                          ? 'AI Agent • Connecting'
-                          : tavusStatus === 'fallback'
-                            ? 'AI Agent • Fallback'
-                            : 'AI Agent • Prototype'}
-                  </span>
+                  <span>{selectedMode === 'voice' ? 'Voice mode' : 'Video avatar mode'}</span>
                 </div>
-                <div className="absolute left-3 top-10 text-[11px] text-slate-200">{isAiSpeaking ? 'PE triage mode • Responding' : 'PE triage mode'}</div>
+
                 <div className="absolute bottom-3 left-3 flex items-end gap-1.5">
-                  <span className={`h-2 w-1 rounded ${realtimeStatus === 'live' || tavusStatus === 'live' ? 'animate-pulse bg-[#9fd67b]' : 'bg-[#5f6f62]'}`} />
+                  <span
+                    className={`h-2 w-1 rounded ${
+                      (selectedMode === 'voice' && realtimeStatus === 'live') || (selectedMode === 'video' && tavusStatus === 'live')
+                        ? 'animate-pulse bg-[#9fd67b]'
+                        : 'bg-[#5f6f62]'
+                    }`}
+                  />
                   <span
                     className={`h-4 w-1 rounded ${
-                      realtimeStatus === 'live' || tavusStatus === 'live' ? 'animate-pulse bg-[#9fd67b] [animation-delay:120ms]' : 'bg-[#5f6f62]'
+                      (selectedMode === 'voice' && realtimeStatus === 'live') || (selectedMode === 'video' && tavusStatus === 'live')
+                        ? 'animate-pulse bg-[#9fd67b] [animation-delay:120ms]'
+                        : 'bg-[#5f6f62]'
                     }`}
                   />
                   <span
                     className={`h-3 w-1 rounded ${
-                      realtimeStatus === 'live' || tavusStatus === 'live' ? 'animate-pulse bg-[#9fd67b] [animation-delay:240ms]' : 'bg-[#5f6f62]'
+                      (selectedMode === 'voice' && realtimeStatus === 'live') || (selectedMode === 'video' && tavusStatus === 'live')
+                        ? 'animate-pulse bg-[#9fd67b] [animation-delay:240ms]'
+                        : 'bg-[#5f6f62]'
                     }`}
                   />
                   <span
                     className={`h-5 w-1 rounded ${
-                      realtimeStatus === 'live' || tavusStatus === 'live' ? 'animate-pulse bg-[#9fd67b] [animation-delay:360ms]' : 'bg-[#5f6f62]'
+                      (selectedMode === 'voice' && realtimeStatus === 'live') || (selectedMode === 'video' && tavusStatus === 'live')
+                        ? 'animate-pulse bg-[#9fd67b] [animation-delay:360ms]'
+                        : 'bg-[#5f6f62]'
                     }`}
                   />
                 </div>
@@ -807,39 +962,27 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
                 </p>
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-2">
+              <div className="mt-3">
                 <button
                   type="button"
-                  onClick={handleConnectVideoAgent}
-                  disabled={tavusStatus === 'connecting' || tavusStatus === 'live'}
-                  className="rounded-md bg-brand-green px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:bg-[#89b86a]"
+                  onClick={handlePrimaryStart}
+                  disabled={primaryButtonDisabled}
+                  className="w-full rounded-md bg-brand-green px-4 py-2.5 text-[13px] font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:bg-[#89b86a]"
                 >
-                  {tavusStatus === 'live' ? 'Video mode connected' : tavusStatus === 'connecting' ? 'Connecting video mode...' : 'Connect video agent'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleStartRealtimeSession}
-                  disabled={realtimeStatus === 'connecting' || realtimeStatus === 'live'}
-                  className="rounded-md border border-brand-line bg-white px-3.5 py-2 text-xs font-medium text-brand-muted transition-colors hover:bg-brand-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {realtimeStatus === 'live' ? 'Audio mode connected' : realtimeStatus === 'connecting' ? 'Connecting audio mode...' : 'Connect audio'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleEnableCameraPreview}
-                  disabled={isCameraLoading || hasCameraPreview || showingTavusFrame}
-                  className="rounded-md border border-brand-line bg-white px-3.5 py-2 text-xs font-medium text-brand-muted transition-colors hover:bg-brand-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {hasCameraPreview ? 'Camera preview on' : isCameraLoading ? 'Enabling camera...' : 'Enable camera preview'}
+                  {primaryButtonLabel}
                 </button>
               </div>
-              <p className="mt-2 text-xs text-brand-muted">{tavusStatus === 'fallback' ? tavusMessage : realtimeMessage}</p>
-              {tavusConversationId ? <p className="mt-1 text-[11px] text-brand-muted">Tavus session active.</p> : null}
+
+              <p className="mt-2 text-xs text-brand-muted">{statusLine}</p>
+              {statusDetail ? <p className="mt-1 text-[11px] leading-[1.4] text-brand-muted">{statusDetail}</p> : null}
+              {selectedMode === 'video' && tavusConversationId ? (
+                <p className="mt-1 text-[11px] text-brand-muted">Tavus session active.</p>
+              ) : null}
             </div>
 
             <div className="flex min-h-[390px] flex-col rounded-md border border-brand-line bg-white p-4">
               <div className="flex items-start justify-between gap-3">
-                <p className="text-xs font-medium uppercase tracking-[0.1em] text-brand-muted">Suggested follow-ups</p>
+                <p className="text-xs font-medium uppercase tracking-[0.1em] text-brand-muted">Quick prompts</p>
                 <button
                   type="button"
                   onClick={clearTranscript}
@@ -848,6 +991,7 @@ export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onE
                   Clear transcript
                 </button>
               </div>
+
               <div className="mt-2 flex flex-wrap gap-2">
                 {followUpOptions.map((option) => (
                   <button

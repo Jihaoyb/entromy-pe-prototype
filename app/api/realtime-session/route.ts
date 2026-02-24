@@ -89,7 +89,8 @@ export async function POST(request: Request) {
       body: {
         model: openAiRealtimeModel,
         voice: openAiRealtimeVoice,
-        instructions
+        instructions,
+        turn_detection: { type: 'server_vad' }
       }
     },
     {
@@ -100,7 +101,8 @@ export async function POST(request: Request) {
           type: 'realtime',
           model: openAiRealtimeModel,
           voice: openAiRealtimeVoice,
-          instructions
+          instructions,
+          turn_detection: { type: 'server_vad' }
         }
       }
     }
