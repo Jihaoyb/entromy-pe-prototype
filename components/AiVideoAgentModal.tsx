@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { trackDemoEvent } from '@/lib/client/trackEvent';
 
 interface AiVideoAgentModalProps {
   open: boolean;
@@ -47,6 +48,7 @@ interface RealtimeSessionFailure {
 }
 
 type RealtimeStatus = 'prototype' | 'connecting' | 'live' | 'fallback';
+type SessionPhase = 'connecting' | 'listening' | 'thinking' | 'responding' | 'fallback' | 'prototype';
 type RealtimeFailureStage =
   | 'feature flag disabled'
   | 'browser unsupported'
@@ -58,6 +60,29 @@ type RealtimeFailureStage =
   | 'data channel failed'
   | 'unknown';
 
+type TranscriptRole = 'assistant' | 'user' | 'system';
+
+interface TranscriptMessage {
+  id: string;
+  role: TranscriptRole;
+  text: string;
+}
+
+interface SessionStateBadge {
+  key: SessionPhase;
+  label: string;
+}
+
+const sessionStateBadges: SessionStateBadge[] = [
+  { key: 'connecting', label: 'Connecting' },
+  { key: 'listening', label: 'Listening' },
+  { key: 'thinking', label: 'Thinking' },
+  { key: 'responding', label: 'Responding' },
+  { key: 'fallback', label: 'Fallback mode' }
+];
+
+const initialAssistantLine = 'I can help triage this quickly and suggest a practical next step for your deal or operating team.';
+
 class RealtimeFlowError extends Error {
   stageHint: RealtimeFailureStage;
   uiDetail?: string;
@@ -67,6 +92,14 @@ class RealtimeFlowError extends Error {
     this.stageHint = stageHint;
     this.uiDetail = uiDetail;
   }
+}
+
+function createMessage(role: TranscriptRole, text: string): TranscriptMessage {
+  const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  return { id, role, text };
 }
 
 function sanitizeDetail(value?: string) {
@@ -139,11 +172,10 @@ function extractRealtimeText(payload: unknown): string | null {
 }
 
 export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecialist }: AiVideoAgentModalProps) {
-  const [transcript, setTranscript] = useState<string[]>([
-    'AI Agent: I can help triage this quickly and suggest a practical next step for your deal or operating team.'
-  ]);
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([createMessage('assistant', initialAssistantLine)]);
   const [isFollowUpLoading, setIsFollowUpLoading] = useState(false);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('prototype');
+  const [sessionPhase, setSessionPhase] = useState<SessionPhase>('prototype');
   const [realtimeMessage, setRealtimeMessage] = useState('Prototype transcript mode is active.');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const [hasCameraPreview, setHasCameraPreview] = useState(false);
@@ -156,9 +188,19 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const speakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
 
-  const appendTranscript = (line: string) => {
-    setTranscript((prev) => [...prev, line]);
+  const activeBadgeKey = useMemo<SessionPhase | null>(() => {
+    if (sessionPhase === 'prototype') return null;
+    return sessionPhase;
+  }, [sessionPhase]);
+
+  const appendMessage = (role: TranscriptRole, text: string) => {
+    setTranscript((prev) => [...prev, createMessage(role, text)]);
+  };
+
+  const clearTranscript = () => {
+    setTranscript([createMessage('assistant', initialAssistantLine)]);
   };
 
   const cleanupRealtime = () => {
@@ -201,10 +243,17 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
     setHasCameraPreview(false);
   };
 
-  const switchToFallbackMode = (message: string) => {
+  const switchToFallbackMode = (stage: RealtimeFailureStage, detail?: string) => {
     cleanupRealtime();
     setRealtimeStatus('fallback');
-    setRealtimeMessage(message);
+    setSessionPhase('fallback');
+    setRealtimeMessage(buildRealtimeFallbackMessage(stage, detail));
+    trackDemoEvent('fallback_triggered', { stage });
+  };
+
+  const handleCloseModal = () => {
+    cleanupRealtime();
+    onClose();
   };
 
   const handleStartRealtimeSession = async () => {
@@ -212,18 +261,20 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
     if (!realtimeFeatureEnabled) {
       console.info('[AiVideoAgentModal][realtime] feature flag disabled');
-      switchToFallbackMode(buildRealtimeFallbackMessage('feature flag disabled'));
+      switchToFallbackMode('feature flag disabled');
       return;
     }
 
     if (typeof window === 'undefined' || !window.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
       console.info('[AiVideoAgentModal][realtime] browser unsupported');
-      switchToFallbackMode(buildRealtimeFallbackMessage('browser unsupported'));
+      switchToFallbackMode('browser unsupported');
       return;
     }
 
     console.info('[AiVideoAgentModal][realtime] connect requested');
+    trackDemoEvent('agent_started', { source: 'ai-video-modal' });
     setRealtimeStatus('connecting');
+    setSessionPhase('connecting');
     setRealtimeMessage('Requesting microphone access and connecting to AI...');
 
     try {
@@ -245,7 +296,11 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       });
 
       console.info('[AiVideoAgentModal][realtime] requesting ephemeral session');
-      const sessionResponse = await fetch('/api/realtime-session', { method: 'POST' });
+      const sessionResponse = await fetch('/api/realtime-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: question.trim() })
+      });
       const sessionData = (await sessionResponse.json()) as RealtimeSessionSuccess | RealtimeSessionFailure;
 
       if (!sessionResponse.ok || !sessionData.ok) {
@@ -310,7 +365,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
           state: peerConnection.connectionState
         });
         if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'disconnected') {
-          switchToFallbackMode(buildRealtimeFallbackMessage('webrtc setup failed', 'Connection dropped.'));
+          switchToFallbackMode('webrtc setup failed', 'Connection dropped.');
         }
       };
 
@@ -321,8 +376,10 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       dataChannel.onopen = () => {
         console.info('[AiVideoAgentModal][realtime] data channel open');
         setRealtimeStatus('live');
+        setSessionPhase('listening');
         setRealtimeMessage('Live audio connected. Speak naturally to the AI agent.');
-        appendTranscript('AI Agent: Live audio is connected. I am ready for your follow-up.');
+        appendMessage('assistant', 'Live audio is connected. I am ready for your follow-up.');
+        trackDemoEvent('audio_connected', { source: 'ai-video-modal' });
       };
 
       dataChannel.onerror = () => {
@@ -336,13 +393,18 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
           if (eventType.includes('audio')) {
             setIsAiSpeaking(true);
+            setSessionPhase('responding');
             if (speakingTimerRef.current) clearTimeout(speakingTimerRef.current);
-            speakingTimerRef.current = setTimeout(() => setIsAiSpeaking(false), 400);
+            speakingTimerRef.current = setTimeout(() => {
+              setIsAiSpeaking(false);
+              setSessionPhase('listening');
+            }, 400);
           }
 
           const text = extractRealtimeText(payload);
           if (text && (eventType.endsWith('.done') || eventType === 'response.done')) {
-            appendTranscript(`AI Agent: ${text}`);
+            appendMessage('assistant', text);
+            setSessionPhase('listening');
           }
         } catch {
           // Ignore non-JSON realtime events.
@@ -353,7 +415,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       await peerConnection.setLocalDescription(offer);
       console.info('[AiVideoAgentModal][realtime] local offer created');
 
-      // WebRTC handshake remains sensitive to model/account/browser compatibility, so we preserve transcript fallback on failure.
+      // WebRTC handshake remains sensitive to model/account/browser compatibility, so transcript fallback stays enabled.
       const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=${encodeURIComponent(sessionData.model)}`, {
         method: 'POST',
         headers: {
@@ -365,7 +427,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
       if (!sdpResponse.ok) {
         const errorText = await sdpResponse.text();
-        throw new RealtimeFlowError('sdp handshake failed', `Realtime SDP handshake failed.`, errorText);
+        throw new RealtimeFlowError('sdp handshake failed', 'Realtime SDP handshake failed.', errorText);
       }
 
       const answerSdp = await sdpResponse.text();
@@ -379,12 +441,12 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
           stage: error.stageHint,
           message: error.message
         });
-        switchToFallbackMode(buildRealtimeFallbackMessage(error.stageHint, error.uiDetail));
+        switchToFallbackMode(error.stageHint, error.uiDetail);
         return;
       }
 
       console.error('[AiVideoAgentModal][realtime] failed with unknown error', error);
-      switchToFallbackMode(buildRealtimeFallbackMessage('unknown'));
+      switchToFallbackMode('unknown');
     }
   };
 
@@ -411,10 +473,11 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
   const handleFollowUp = async (option: (typeof followUpOptions)[number]) => {
     if (isFollowUpLoading) return;
 
-    setTranscript((prev) => [...prev, `You: ${option}`]);
+    appendMessage('user', option);
 
     if (realtimeStatus === 'live' && dataChannelRef.current?.readyState === 'open') {
       try {
+        setSessionPhase('thinking');
         dataChannelRef.current.send(
           JSON.stringify({
             type: 'conversation.item.create',
@@ -433,6 +496,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
     }
 
     setIsFollowUpLoading(true);
+    setSessionPhase('thinking');
 
     try {
       const combinedQuestion = question.trim() ? `${question.trim()} Follow-up: ${option}` : option;
@@ -451,10 +515,15 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
         throw new Error('AI video follow-up request failed.');
       }
 
-      setTranscript((prev) => [...prev, `AI Agent: ${data.answer}`, `AI Agent Next step: ${data.recommendedNextStep}`]);
+      setSessionPhase('responding');
+      appendMessage('assistant', data.answer);
+      appendMessage('system', `Next step: ${data.recommendedNextStep}`);
+      setSessionPhase(realtimeStatus === 'live' ? 'listening' : realtimeStatus === 'fallback' ? 'fallback' : 'prototype');
     } catch (error) {
       console.error('[AiVideoAgentModal] Failed to fetch follow-up response:', error);
-      setTranscript((prev) => [...prev, `AI Agent: ${followUpResponses[option]}`]);
+      setSessionPhase('responding');
+      appendMessage('assistant', followUpResponses[option]);
+      setSessionPhase(realtimeStatus === 'fallback' ? 'fallback' : 'prototype');
     } finally {
       setIsFollowUpLoading(false);
     }
@@ -463,175 +532,221 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
   useEffect(() => {
     if (!open) {
       cleanupRealtime();
-      setTranscript(['AI Agent: I can help triage this quickly and suggest a practical next step for your deal or operating team.']);
+      setTranscript([createMessage('assistant', initialAssistantLine)]);
       setIsFollowUpLoading(false);
       setRealtimeStatus('prototype');
+      setSessionPhase('prototype');
       setRealtimeMessage('Prototype transcript mode is active.');
       return;
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        handleCloseModal();
+      }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+  }, [open]);
+
+  useEffect(() => {
+    const container = transcriptScrollRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, [transcript, isFollowUpLoading]);
 
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4"
-      onClick={() => {
-        cleanupRealtime();
-        onClose();
-      }}
-      role="presentation"
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4" onClick={handleCloseModal} role="presentation">
       <div
-        className="w-full max-w-3xl rounded-xl border border-brand-line bg-white p-5 shadow-xl max-h-[90vh] overflow-y-auto"
+        className="flex w-full max-w-4xl max-h-[92vh] flex-col overflow-hidden rounded-xl border border-brand-line bg-white shadow-xl"
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="ai-video-title"
       >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 id="ai-video-title" className="text-xl font-medium text-brand-ink">
-              Start AI video agent (2 min)
-            </h3>
-            <p className="mt-1.5 text-sm leading-[1.5] text-brand-muted">
-              Ask a quick follow-up and get a guided PE-focused recommendation before escalating to a specialist.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              cleanupRealtime();
-              onClose();
-            }}
-            className="rounded-sm border border-brand-line px-2 py-1 text-xs text-brand-muted transition hover:bg-brand-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
-            aria-label="Close AI video agent modal"
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="mt-4 grid gap-4 lg:grid-cols-[1.05fr_0.95fr]">
-          <div className="rounded-md border border-brand-line bg-brand-panel p-4">
-            <div className="relative overflow-hidden rounded-md border border-brand-line bg-[#1f2520] aspect-[16/10]">
-              {hasCameraPreview ? (
-                <video ref={videoElementRef} className="h-full w-full object-cover" autoPlay muted playsInline />
-              ) : null}
-              <div className="absolute left-3 top-3 inline-flex items-center gap-2 rounded-full bg-black/45 px-2.5 py-1 text-[11px] text-white">
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    realtimeStatus === 'live' ? 'bg-[#71e440] animate-pulse' : realtimeStatus === 'connecting' ? 'bg-[#d9e85f]' : 'bg-slate-300'
-                  }`}
-                />
-                <span>
-                  {realtimeStatus === 'live'
-                    ? 'AI Agent • Live'
-                    : realtimeStatus === 'connecting'
-                      ? 'AI Agent • Connecting'
-                      : 'AI Agent • Prototype'}
-                </span>
-              </div>
-              <div className="absolute left-3 top-10 text-[11px] text-slate-200">
-                {isAiSpeaking ? 'PE triage mode • Speaking' : 'PE triage mode'}
-              </div>
-              <div className="absolute bottom-3 left-3 flex items-end gap-1.5">
-                <span className={`h-2 w-1 rounded ${realtimeStatus === 'live' ? 'bg-[#9fd67b] animate-pulse' : 'bg-[#5f6f62]'}`} />
-                <span
-                  className={`h-4 w-1 rounded ${realtimeStatus === 'live' ? 'bg-[#9fd67b] animate-pulse [animation-delay:120ms]' : 'bg-[#5f6f62]'}`}
-                />
-                <span
-                  className={`h-3 w-1 rounded ${realtimeStatus === 'live' ? 'bg-[#9fd67b] animate-pulse [animation-delay:240ms]' : 'bg-[#5f6f62]'}`}
-                />
-                <span
-                  className={`h-5 w-1 rounded ${realtimeStatus === 'live' ? 'bg-[#9fd67b] animate-pulse [animation-delay:360ms]' : 'bg-[#5f6f62]'}`}
-                />
-              </div>
-            </div>
-
-            <div className="mt-3 rounded-md border border-brand-line bg-white p-3">
-              <p className="text-xs font-medium uppercase tracking-[0.1em] text-brand-muted">Your question</p>
-              <p className="mt-1 text-sm leading-[1.5] text-brand-ink">
-                {question.trim() || 'No question provided. Return to the triage panel to add context.'}
+        <div className="shrink-0 border-b border-brand-line bg-white px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 id="ai-video-title" className="text-xl font-medium text-brand-ink">
+                Start AI video agent (2 min)
+              </h3>
+              <p className="mt-1.5 text-sm leading-[1.5] text-brand-muted">
+                Ask a quick follow-up and get a guided PE-focused recommendation before escalating to a specialist.
               </p>
             </div>
-
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={handleStartRealtimeSession}
-                disabled={realtimeStatus === 'connecting' || realtimeStatus === 'live'}
-                className="rounded-md bg-brand-green px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:bg-[#89b86a]"
-              >
-                {realtimeStatus === 'live'
-                  ? 'Audio connected'
-                  : realtimeStatus === 'connecting'
-                    ? 'Connecting audio...'
-                    : 'Connect audio'}
-              </button>
-              <button
-                type="button"
-                onClick={handleEnableCameraPreview}
-                disabled={isCameraLoading || hasCameraPreview}
-                className="rounded-md border border-brand-line bg-white px-3.5 py-2 text-xs font-medium text-brand-muted transition-colors hover:bg-brand-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {hasCameraPreview ? 'Camera preview on' : isCameraLoading ? 'Enabling camera...' : 'Enable camera preview'}
-              </button>
-            </div>
-            <p className="mt-2 text-xs text-brand-muted">{realtimeMessage}</p>
+            <button
+              type="button"
+              onClick={handleCloseModal}
+              className="rounded-sm border border-brand-line px-2 py-1 text-xs text-brand-muted transition hover:bg-brand-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
+              aria-label="Close AI video agent modal"
+            >
+              Close
+            </button>
           </div>
 
-          <div className="rounded-md border border-brand-line bg-white p-4">
-            <p className="text-xs font-medium uppercase tracking-[0.1em] text-brand-muted">Suggested follow-ups</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {followUpOptions.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => handleFollowUp(option)}
-                  disabled={isFollowUpLoading}
-                  className="rounded-full border border-brand-line bg-white px-3 py-1.5 text-xs text-brand-muted transition-colors hover:bg-brand-greenTint hover:text-brand-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:opacity-60"
+          <div className="mt-3 flex flex-wrap gap-2">
+            {sessionStateBadges.map((badge) => {
+              const isActive = badge.key === activeBadgeKey;
+              return (
+                <span
+                  key={badge.key}
+                  className={`rounded-full border px-2.5 py-1 text-[11px] ${
+                    isActive
+                      ? 'border-brand-green bg-brand-greenTint text-brand-ink'
+                      : 'border-brand-line bg-white text-brand-muted'
+                  }`}
                 >
-                  {option}
+                  {badge.label}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto p-5">
+          <div className="grid gap-4 lg:grid-cols-[1.02fr_0.98fr]">
+            <div className="rounded-md border border-brand-line bg-brand-panel p-4">
+              <div className="relative overflow-hidden rounded-md border border-brand-line bg-[#1f2520] aspect-[16/10]">
+                {hasCameraPreview ? <video ref={videoElementRef} className="h-full w-full object-cover" autoPlay muted playsInline /> : null}
+                <div className="absolute left-3 top-3 inline-flex items-center gap-2 rounded-full bg-black/45 px-2.5 py-1 text-[11px] text-white">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      realtimeStatus === 'live' ? 'bg-[#71e440] animate-pulse' : realtimeStatus === 'connecting' ? 'bg-[#d9e85f]' : 'bg-slate-300'
+                    }`}
+                  />
+                  <span>
+                    {realtimeStatus === 'live'
+                      ? 'AI Agent • Live'
+                      : realtimeStatus === 'connecting'
+                        ? 'AI Agent • Connecting'
+                        : realtimeStatus === 'fallback'
+                          ? 'AI Agent • Fallback'
+                          : 'AI Agent • Prototype'}
+                  </span>
+                </div>
+                <div className="absolute left-3 top-10 text-[11px] text-slate-200">
+                  {isAiSpeaking ? 'PE triage mode • Responding' : 'PE triage mode'}
+                </div>
+                <div className="absolute bottom-3 left-3 flex items-end gap-1.5">
+                  <span className={`h-2 w-1 rounded ${realtimeStatus === 'live' ? 'bg-[#9fd67b] animate-pulse' : 'bg-[#5f6f62]'}`} />
+                  <span className={`h-4 w-1 rounded ${realtimeStatus === 'live' ? 'bg-[#9fd67b] animate-pulse [animation-delay:120ms]' : 'bg-[#5f6f62]'}`} />
+                  <span className={`h-3 w-1 rounded ${realtimeStatus === 'live' ? 'bg-[#9fd67b] animate-pulse [animation-delay:240ms]' : 'bg-[#5f6f62]'}`} />
+                  <span className={`h-5 w-1 rounded ${realtimeStatus === 'live' ? 'bg-[#9fd67b] animate-pulse [animation-delay:360ms]' : 'bg-[#5f6f62]'}`} />
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-md border border-brand-line bg-white p-3">
+                <p className="text-xs font-medium uppercase tracking-[0.1em] text-brand-muted">Original question</p>
+                <p className="mt-1 text-sm leading-[1.5] text-brand-ink">
+                  {question.trim() || 'No question provided. Return to the triage panel to add context.'}
+                </p>
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleStartRealtimeSession}
+                  disabled={realtimeStatus === 'connecting' || realtimeStatus === 'live'}
+                  className="rounded-md bg-brand-green px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:bg-[#89b86a]"
+                >
+                  {realtimeStatus === 'live'
+                    ? 'Audio connected'
+                    : realtimeStatus === 'connecting'
+                      ? 'Connecting audio...'
+                      : 'Connect audio'}
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={handleEnableCameraPreview}
+                  disabled={isCameraLoading || hasCameraPreview}
+                  className="rounded-md border border-brand-line bg-white px-3.5 py-2 text-xs font-medium text-brand-muted transition-colors hover:bg-brand-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {hasCameraPreview ? 'Camera preview on' : isCameraLoading ? 'Enabling camera...' : 'Enable camera preview'}
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-brand-muted">{realtimeMessage}</p>
             </div>
 
-            <div className="mt-3 min-h-[170px] rounded-md border border-dashed border-brand-line bg-brand-panel p-3 text-sm leading-[1.55] text-brand-muted" aria-live="polite">
-              {transcript.map((line, index) => (
-                <p key={`${line}-${index}`} className={index > 0 ? 'mt-2' : undefined}>
-                  {line}
-                </p>
-              ))}
-              {isFollowUpLoading ? <p className="mt-2 text-brand-muted/90">AI Agent: Reviewing your follow-up...</p> : null}
+            <div className="flex min-h-[390px] flex-col rounded-md border border-brand-line bg-white p-4">
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-xs font-medium uppercase tracking-[0.1em] text-brand-muted">Suggested follow-ups</p>
+                <button
+                  type="button"
+                  onClick={clearTranscript}
+                  className="text-xs text-brand-muted underline-offset-2 transition-colors hover:text-brand-ink hover:underline"
+                >
+                  Clear transcript
+                </button>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {followUpOptions.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => handleFollowUp(option)}
+                    disabled={isFollowUpLoading}
+                    className="rounded-full border border-brand-line bg-white px-3 py-1.5 text-xs text-brand-muted transition-colors hover:bg-brand-greenTint hover:text-brand-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+
+              <div
+                ref={transcriptScrollRef}
+                className="mt-3 flex-1 min-h-[220px] max-h-[40vh] overflow-y-auto rounded-md border border-dashed border-brand-line bg-brand-panel p-3"
+                aria-live="polite"
+              >
+                {transcript.map((message) => (
+                  <div key={message.id} className={`mb-2.5 flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div
+                      className={`max-w-[92%] rounded-md px-3 py-2 text-sm leading-[1.5] ${
+                        message.role === 'user'
+                          ? 'border border-brand-greenLine bg-brand-greenTint text-brand-ink'
+                          : message.role === 'system'
+                            ? 'border border-brand-line bg-white text-brand-muted text-[13px]'
+                            : 'border border-brand-line bg-white text-brand-ink'
+                      }`}
+                    >
+                      {message.role === 'system' ? <span className="font-medium">Note: </span> : null}
+                      {message.text}
+                    </div>
+                  </div>
+                ))}
+                {isFollowUpLoading ? (
+                  <p className="mt-1 text-sm text-brand-muted">AI Agent: Reviewing your follow-up...</p>
+                ) : null}
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap gap-2.5">
-          <button
-            type="button"
-            onClick={() => {
-              cleanupRealtime();
-              onClose();
-            }}
-            className="rounded-md border border-brand-line px-4 py-2.5 text-[13px] font-medium text-brand-muted transition-colors hover:bg-brand-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
-          >
-            End session
-          </button>
-          <button
-            type="button"
-            onClick={onEscalateToSpecialist}
-            className="rounded-md bg-brand-green px-4 py-2.5 text-[13px] font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
-          >
-            Escalate to specialist
-          </button>
+        <div className="shrink-0 border-t border-brand-line bg-white/95 px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs text-brand-muted">Use specialist escalation for deal-specific decisions and urgent portfolio context.</p>
+            <div className="flex flex-wrap gap-2.5">
+              <button
+                type="button"
+                onClick={handleCloseModal}
+                className="rounded-md border border-brand-line px-4 py-2.5 text-[13px] font-medium text-brand-muted transition-colors hover:bg-brand-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
+              >
+                End session
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  trackDemoEvent('escalated_to_specialist', { source: 'ai-video-modal' });
+                  onEscalateToSpecialist();
+                }}
+                className="rounded-md bg-brand-green px-4 py-2.5 text-[13px] font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
+              >
+                Escalate to specialist
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

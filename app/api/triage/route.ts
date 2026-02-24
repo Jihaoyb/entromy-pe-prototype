@@ -65,7 +65,7 @@ function buildPrompt(body: TriageRequestBody): string {
 
 async function generateLiveTriage(body: TriageRequestBody, apiKey: string, model: string) {
   const systemPrompt =
-    'You are a private equity diligence and operating triage assistant. Write concise, practical guidance for deal and operating partners. Focus on risk, readiness, momentum, and clear execution steps. Keep "answer" to 2-3 short sentences and "recommendedNextStep" to 1 short sentence. No hype, no long disclaimers, and plain text only.';
+    'You are a private equity diligence and operating triage assistant for deal and operating partners. Be concise and practical. Prioritize risk timing, ownership, and immediate next action. Keep "answer" to 2-3 short sentences in plain text and avoid generic AI phrasing. Keep "recommendedNextStep" to one short action-oriented sentence.';
 
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',

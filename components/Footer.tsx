@@ -3,6 +3,7 @@
 import { FormEvent, useState } from 'react';
 import Image from 'next/image';
 import { isValidEmailAddress } from '@/lib/validation/email';
+import { trackDemoEvent } from '@/lib/client/trackEvent';
 
 interface SubscribeApiSuccess {
   ok: true;
@@ -51,6 +52,7 @@ export function Footer() {
 
       setSubscribeSuccess(data.message);
       setEmail('');
+      trackDemoEvent('subscribe_submitted');
     } catch (error) {
       console.error('[Footer] Subscribe request failed:', error);
       setSubscribeError('Network error. Please try again.');

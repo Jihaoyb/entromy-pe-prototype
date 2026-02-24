@@ -86,6 +86,9 @@ If `OPENAI_API_KEY` is missing or AI calls fail, `/api/triage` returns a strong 
   - Creates a server-side ephemeral realtime token for browser WebRTC usage.
   - Never exposes `OPENAI_API_KEY` to the client.
   - Returns graceful errors so UI can fall back to prototype mode.
+- `POST /api/events`
+  - Lightweight demo instrumentation endpoint (logs allowed UI events server-side).
+  - No DB persistence; useful for validating interaction flow during demos.
 
 ## Key Components
 - `/Users/jihaoy/dev/entromy-pe-prototype/components/Navbar.tsx`

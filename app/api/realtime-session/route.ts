@@ -14,6 +14,10 @@ interface RealtimeSessionErrorResponse {
   stage: 'env' | 'session_setup' | 'token_parse';
 }
 
+interface RealtimeSessionRequestBody {
+  question?: string;
+}
+
 interface OpenAIRealtimeSessionResponse {
   client_secret?: { value?: string } | string;
   clientSecret?: string;
@@ -26,8 +30,13 @@ interface SessionEndpointConfig {
   body: Record<string, unknown>;
 }
 
-const realtimeInstructions =
-  'You are a PE operating triage agent. Keep guidance concise, practical, and focused on risk, readiness, and momentum.';
+function buildRealtimeInstructions(question?: string) {
+  const baseInstructions =
+    'You are a PE operating triage agent. Be concise, practical, and operator-focused. Prioritize risk, timing, ownership, and next action. Keep each response to 2-3 short paragraphs max and avoid generic AI phrasing.';
+
+  if (!question) return baseInstructions;
+  return `${baseInstructions}\n\nInitial portfolio question: ${question}`;
+}
 
 function sanitizeErrorText(value: string) {
   return value.replace(/\s+/g, ' ').trim().slice(0, 180);
@@ -49,8 +58,18 @@ function extractClientSecret(payload: OpenAIRealtimeSessionResponse): string {
   return '';
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   const { openAiApiKey, openAiRealtimeModel, openAiRealtimeVoice } = getServerConfig();
+  let questionContext = '';
+
+  try {
+    const body = (await request.json()) as RealtimeSessionRequestBody;
+    if (typeof body?.question === 'string') {
+      questionContext = body.question.trim().slice(0, 300);
+    }
+  } catch {
+    // Ignore malformed or empty request body; realtime can still start without initial question context.
+  }
 
   if (!openAiApiKey) {
     const missingKeyResponse: RealtimeSessionErrorResponse = {
@@ -61,6 +80,8 @@ export async function POST() {
     return NextResponse.json(missingKeyResponse, { status: 503 });
   }
 
+  const instructions = buildRealtimeInstructions(questionContext);
+
   const endpoints: SessionEndpointConfig[] = [
     {
       label: 'sessions',
@@ -68,7 +89,7 @@ export async function POST() {
       body: {
         model: openAiRealtimeModel,
         voice: openAiRealtimeVoice,
-        instructions: realtimeInstructions
+        instructions
       }
     },
     {
@@ -79,7 +100,7 @@ export async function POST() {
           type: 'realtime',
           model: openAiRealtimeModel,
           voice: openAiRealtimeVoice,
-          instructions: realtimeInstructions
+          instructions
         }
       }
     }
@@ -87,7 +108,8 @@ export async function POST() {
 
   console.info('[api/realtime-session] start', {
     model: openAiRealtimeModel,
-    voice: openAiRealtimeVoice
+    voice: openAiRealtimeVoice,
+    hasQuestionContext: Boolean(questionContext)
   });
 
   const endpointErrors: string[] = [];
