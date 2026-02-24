@@ -1,11 +1,32 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction
+} from 'react';
 import { trackDemoEvent } from '@/lib/client/trackEvent';
+import {
+  addSessionSystemNote,
+  appendSessionMessage,
+  createTranscriptMessage,
+  ensureSessionIntroMessage,
+  getRecentTranscriptEntries,
+  setAgentSessionMode,
+  type AgentSessionContext,
+  type AgentSessionMode,
+  type AgentTranscriptRole,
+  type AgentTranscriptSource
+} from '@/lib/shared/agentSession';
 
 interface AiVideoAgentModalProps {
   open: boolean;
-  question: string;
+  session: AgentSessionContext;
+  onSessionChange: Dispatch<SetStateAction<AgentSessionContext>>;
   onClose: () => void;
   onEscalateToSpecialist: () => void;
 }
@@ -13,6 +34,7 @@ interface AiVideoAgentModalProps {
 const followUpOptions = ['Show me a 30-day plan', 'What should I validate first?', 'When should I escalate this?'] as const;
 const realtimeFeatureEnabled = process.env.NEXT_PUBLIC_ENABLE_REALTIME_AGENT === 'true';
 const tavusFeatureEnabled = process.env.NEXT_PUBLIC_ENABLE_TAVUS_VIDEO_AGENT === 'true';
+const initialAssistantLine = 'I can help triage this quickly and suggest a practical next step for your deal or operating team.';
 
 const followUpResponses: Record<(typeof followUpOptions)[number], string> = {
   'Show me a 30-day plan':
@@ -75,14 +97,6 @@ type RealtimeFailureStage =
   | 'data channel failed'
   | 'unknown';
 
-type TranscriptRole = 'assistant' | 'user' | 'system';
-
-interface TranscriptMessage {
-  id: string;
-  role: TranscriptRole;
-  text: string;
-}
-
 interface SessionStateBadge {
   key: SessionPhase;
   label: string;
@@ -96,8 +110,6 @@ const sessionStateBadges: SessionStateBadge[] = [
   { key: 'fallback', label: 'Fallback mode' }
 ];
 
-const initialAssistantLine = 'I can help triage this quickly and suggest a practical next step for your deal or operating team.';
-
 class RealtimeFlowError extends Error {
   stageHint: RealtimeFailureStage;
   uiDetail?: string;
@@ -107,15 +119,6 @@ class RealtimeFlowError extends Error {
     this.stageHint = stageHint;
     this.uiDetail = uiDetail;
   }
-}
-
-function createMessage(role: TranscriptRole, text: string): TranscriptMessage {
-  const id =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-  return { id, role, text };
 }
 
 function sanitizeDetail(value?: string) {
@@ -160,12 +163,8 @@ function extractRealtimeText(payload: unknown): string | null {
   if (!payload || typeof payload !== 'object') return null;
   const data = payload as Record<string, unknown>;
 
-  if (typeof data.transcript === 'string' && data.transcript.trim()) {
-    return data.transcript.trim();
-  }
-  if (typeof data.text === 'string' && data.text.trim()) {
-    return data.text.trim();
-  }
+  if (typeof data.transcript === 'string' && data.transcript.trim()) return data.transcript.trim();
+  if (typeof data.text === 'string' && data.text.trim()) return data.text.trim();
 
   const response = data.response as Record<string, unknown> | undefined;
   const output = response?.output;
@@ -175,6 +174,7 @@ function extractRealtimeText(payload: unknown): string | null {
     if (!outputItem || typeof outputItem !== 'object') continue;
     const content = (outputItem as Record<string, unknown>).content;
     if (!Array.isArray(content)) continue;
+
     for (const part of content) {
       if (!part || typeof part !== 'object') continue;
       const text = (part as Record<string, unknown>).text;
@@ -187,8 +187,13 @@ function extractRealtimeText(payload: unknown): string | null {
   return null;
 }
 
-export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecialist }: AiVideoAgentModalProps) {
-  const [transcript, setTranscript] = useState<TranscriptMessage[]>([createMessage('assistant', initialAssistantLine)]);
+function sourceFromMode(mode: AgentSessionMode): AgentTranscriptSource {
+  if (mode === 'audio') return 'audio';
+  if (mode === 'video') return 'video';
+  return 'fallback';
+}
+
+export function AiVideoAgentModal({ open, session, onSessionChange, onClose, onEscalateToSpecialist }: AiVideoAgentModalProps) {
   const [isFollowUpLoading, setIsFollowUpLoading] = useState(false);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('prototype');
   const [sessionPhase, setSessionPhase] = useState<SessionPhase>('prototype');
@@ -217,22 +222,59 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
   const showingTavusFrame = tavusStatus === 'live' && Boolean(tavusConversationUrl);
 
-  const appendMessage = (role: TranscriptRole, text: string) => {
-    setTranscript((prev) => [...prev, createMessage(role, text)]);
-  };
+  const updateSession = useCallback(
+    (updater: (previous: AgentSessionContext) => AgentSessionContext) => {
+      onSessionChange((previous) => updater(previous));
+    },
+    [onSessionChange]
+  );
+
+  const appendSharedMessage = useCallback(
+    (role: AgentTranscriptRole, text: string, source: AgentTranscriptSource) => {
+      updateSession((previous) => appendSessionMessage(previous, createTranscriptMessage(role, text, source)));
+    },
+    [updateSession]
+  );
+
+  const appendSystemNote = useCallback(
+    (text: string, source: AgentTranscriptSource = 'fallback') => {
+      updateSession((previous) => addSessionSystemNote(previous, text, source));
+    },
+    [updateSession]
+  );
+
+  const updateSessionMode = useCallback(
+    (mode: AgentSessionMode, fallbackReason?: string) => {
+      updateSession((previous) =>
+        setAgentSessionMode(previous, mode, {
+          connected: mode === 'audio' || mode === 'video',
+          fallbackReason
+        })
+      );
+    },
+    [updateSession]
+  );
 
   const clearTranscript = () => {
-    setTranscript([createMessage('assistant', initialAssistantLine)]);
+    const introMessage = createTranscriptMessage('assistant', initialAssistantLine, 'fallback');
+    updateSession((previous) => ({
+      ...previous,
+      transcript: [introMessage],
+      status: {
+        ...previous.status,
+        lastUpdatedAt: introMessage.timestamp
+      }
+    }));
   };
 
-  const resetTavusState = () => {
+  const resetTavusState = useCallback(() => {
     setTavusStatus('idle');
     setTavusMessage('Video avatar is available when Tavus is enabled.');
     setTavusConversationUrl('');
     setTavusConversationId('');
-  };
+  }, []);
 
-  const cleanupRealtime = () => {
+  const cleanupRealtime = useCallback(() => {
     if (speakingTimerRef.current) {
       clearTimeout(speakingTimerRef.current);
       speakingTimerRef.current = null;
@@ -270,29 +312,45 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
     setIsAiSpeaking(false);
     setHasCameraPreview(false);
-  };
+  }, []);
 
   const switchToFallbackMode = (stage: RealtimeFailureStage, detail?: string) => {
     cleanupRealtime();
     setRealtimeStatus('fallback');
     setSessionPhase('fallback');
-    setRealtimeMessage(buildRealtimeFallbackMessage(stage, detail));
+    const fallbackMessage = buildRealtimeFallbackMessage(stage, detail);
+    setRealtimeMessage(fallbackMessage);
+    updateSessionMode('fallback', stage);
+    appendSystemNote(`Audio mode unavailable (${stage}). Continuing in prototype mode.`, 'fallback');
     trackDemoEvent('fallback_triggered', { stage });
   };
 
   const switchVideoFallbackMode = (stage: string, detail?: string) => {
-    setTavusStatus('fallback');
     const safeStage = sanitizeDetail(stage);
     const safeDetail = sanitizeDetail(detail);
+
+    setTavusStatus('fallback');
     setTavusMessage(`Video agent unavailable (${safeStage}${safeDetail ? `: ${safeDetail}` : ''}). Using current prototype/audio mode.`);
+
+    if (realtimeStatus === 'live') {
+      updateSessionMode('audio', safeStage);
+      appendSystemNote('Video avatar unavailable. Continuing in audio mode.', 'fallback');
+      setSessionPhase('listening');
+    } else {
+      updateSessionMode('fallback', safeStage);
+      appendSystemNote('Video avatar unavailable. Continuing in prototype mode.', 'fallback');
+      setSessionPhase('fallback');
+    }
+
     trackDemoEvent('video_agent_fallback_triggered', { stage: safeStage });
   };
 
-  const handleCloseModal = () => {
+  const handleCloseModal = useCallback(() => {
     cleanupRealtime();
     resetTavusState();
+    updateSessionMode('none');
     onClose();
-  };
+  }, [cleanupRealtime, onClose, resetTavusState, updateSessionMode]);
 
   const handleConnectVideoAgent = async () => {
     if (tavusStatus === 'connecting' || tavusStatus === 'live') return;
@@ -306,17 +364,26 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
     setTavusStatus('connecting');
     setSessionPhase('connecting');
     setTavusMessage('Starting Tavus video agent session...');
-    console.info('[AiVideoAgentModal][tavus] connect requested', {
-      hasQuestion: Boolean(question.trim())
-    });
 
     try {
       const response = await fetch('/api/tavus-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          question: question.trim(),
-          context: { source: 'ai-video-modal' }
+          originalQuestion: session.originalQuestion,
+          triageAnswer: session.triageAnswer,
+          recommendedNextStep: session.recommendedNextStep,
+          recentTranscript: getRecentTranscriptEntries(session, 8).map((entry) => ({
+            role: entry.role,
+            text: entry.text,
+            source: entry.source,
+            timestamp: entry.timestamp
+          })),
+          context: {
+            source: 'ai-video-modal',
+            currentMode: session.currentMode,
+            sessionId: session.sessionId
+          }
         })
       });
 
@@ -324,29 +391,27 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       if (!response.ok || !data.ok) {
         const stage = !data.ok && data.stage ? data.stage : 'session_setup';
         const detail = !data.ok ? data.error : 'Unexpected Tavus response.';
-        console.warn('[AiVideoAgentModal][tavus] session setup failed', {
-          stage,
-          status: response.status
-        });
         switchVideoFallbackMode(stage, detail);
-        setSessionPhase(realtimeStatus === 'live' ? 'listening' : 'fallback');
         return;
       }
 
       setTavusStatus('live');
       setTavusConversationUrl(data.conversationUrl);
       setTavusConversationId(data.conversationId);
-      setTavusMessage('Tavus video agent connected. Continue with follow-ups below.');
+      setTavusMessage('Video avatar connected. Continue your session below.');
       setSessionPhase('listening');
-      appendMessage('assistant', 'Video agent is now connected. You can continue through voice or follow-up prompts.');
+      updateSessionMode('video');
+
+      if (session.currentMode === 'audio') {
+        appendSystemNote('Switched to video avatar mode. Context preserved.', 'video');
+      } else {
+        appendSystemNote('Video avatar mode connected. Context preserved.', 'video');
+      }
+
       trackDemoEvent('video_agent_connected', { source: 'ai-video-modal', hasConversationId: Boolean(data.conversationId) });
-      console.info('[AiVideoAgentModal][tavus] connected', {
-        hasConversationId: Boolean(data.conversationId)
-      });
     } catch (error) {
       console.error('[AiVideoAgentModal][tavus] failed to connect:', error);
       switchVideoFallbackMode('session_setup', 'Unexpected network error');
-      setSessionPhase(realtimeStatus === 'live' ? 'listening' : 'fallback');
     }
   };
 
@@ -354,25 +419,21 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
     if (realtimeStatus === 'connecting' || realtimeStatus === 'live') return;
 
     if (!realtimeFeatureEnabled) {
-      console.info('[AiVideoAgentModal][realtime] feature flag disabled');
       switchToFallbackMode('feature flag disabled');
       return;
     }
 
     if (typeof window === 'undefined' || !window.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
-      console.info('[AiVideoAgentModal][realtime] browser unsupported');
       switchToFallbackMode('browser unsupported');
       return;
     }
 
-    console.info('[AiVideoAgentModal][realtime] connect requested');
     trackDemoEvent('agent_started', { source: 'ai-video-modal' });
     setRealtimeStatus('connecting');
     setSessionPhase('connecting');
     setRealtimeMessage('Requesting microphone access and connecting to AI...');
 
     try {
-      console.info('[AiVideoAgentModal][realtime] requesting microphone permission');
       let micStream: MediaStream;
       try {
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -385,15 +446,11 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       }
 
       microphoneStreamRef.current = micStream;
-      console.info('[AiVideoAgentModal][realtime] microphone stream acquired', {
-        audioTracks: micStream.getAudioTracks().length
-      });
 
-      console.info('[AiVideoAgentModal][realtime] requesting ephemeral session');
       const sessionResponse = await fetch('/api/realtime-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: question.trim() })
+        body: JSON.stringify({ question: session.originalQuestion.trim() })
       });
       const sessionData = (await sessionResponse.json()) as RealtimeSessionSuccess | RealtimeSessionFailure;
 
@@ -401,11 +458,10 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
         const stageHint =
           !sessionData.ok && sessionData.stage === 'token_parse'
             ? 'token parse failed'
-            : !sessionData.ok && sessionData.stage === 'session_setup'
+            : !sessionData.ok && (sessionData.stage === 'session_setup' || sessionData.stage === 'env')
               ? 'session setup failed'
-              : !sessionData.ok && sessionData.stage === 'env'
-                ? 'session setup failed'
-                : 'session setup failed';
+              : 'session setup failed';
+
         const detail = !sessionData.ok ? sessionData.error : 'Session endpoint returned an unexpected payload.';
         throw new RealtimeFlowError(stageHint, `Realtime session endpoint failed with status ${sessionResponse.status}.`, detail);
       }
@@ -413,12 +469,6 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       if (!sessionData.clientSecret || !sessionData.model) {
         throw new RealtimeFlowError('token parse failed', 'Realtime session payload did not include required fields.');
       }
-
-      console.info('[AiVideoAgentModal][realtime] session received', {
-        hasClientSecret: Boolean(sessionData.clientSecret),
-        model: sessionData.model,
-        voice: sessionData.voice
-      });
 
       let peerConnection: RTCPeerConnection;
       try {
@@ -438,16 +488,9 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       }
 
       audioTracks.forEach((track) => peerConnection.addTrack(track, micStream));
-      console.info('[AiVideoAgentModal][realtime] microphone track attached to peer connection', {
-        audioTracks: audioTracks.length
-      });
 
       peerConnection.ontrack = (event) => {
         const [remoteStream] = event.streams;
-        console.info('[AiVideoAgentModal][realtime] received remote track', {
-          hasStream: Boolean(remoteStream),
-          trackCount: remoteStream?.getTracks().length ?? 0
-        });
         if (remoteStream && remoteAudioRef.current) {
           remoteAudioRef.current.srcObject = remoteStream;
           remoteAudioRef.current.play().catch(() => undefined);
@@ -455,9 +498,6 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       };
 
       peerConnection.onconnectionstatechange = () => {
-        console.info('[AiVideoAgentModal][realtime] connection state changed', {
-          state: peerConnection.connectionState
-        });
         if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'disconnected') {
           switchToFallbackMode('webrtc setup failed', 'Connection dropped.');
         }
@@ -465,14 +505,19 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
       const dataChannel = peerConnection.createDataChannel('oai-events');
       dataChannelRef.current = dataChannel;
-      console.info('[AiVideoAgentModal][realtime] data channel created');
 
       dataChannel.onopen = () => {
-        console.info('[AiVideoAgentModal][realtime] data channel open');
         setRealtimeStatus('live');
         setSessionPhase('listening');
         setRealtimeMessage('Live audio connected. Speak naturally to the AI agent.');
-        appendMessage('assistant', 'Live audio is connected. I am ready for your follow-up.');
+        updateSessionMode('audio');
+
+        if (session.currentMode === 'video') {
+          appendSystemNote('Switched to audio mode. Context preserved.', 'audio');
+        } else {
+          appendSystemNote('AI agent session started in audio mode.', 'audio');
+        }
+
         trackDemoEvent('audio_connected', { source: 'ai-video-modal' });
       };
 
@@ -497,7 +542,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
           const text = extractRealtimeText(payload);
           if (text && (eventType.endsWith('.done') || eventType === 'response.done')) {
-            appendMessage('assistant', text);
+            appendSharedMessage('assistant', text, 'audio');
             setSessionPhase('listening');
           }
         } catch {
@@ -507,9 +552,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
-      console.info('[AiVideoAgentModal][realtime] local offer created');
 
-      // WebRTC handshake remains sensitive to model/account/browser compatibility, so transcript fallback stays enabled.
       const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=${encodeURIComponent(sessionData.model)}`, {
         method: 'POST',
         headers: {
@@ -526,8 +569,6 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
 
       const answerSdp = await sdpResponse.text();
       await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-      console.info('[AiVideoAgentModal][realtime] remote SDP applied');
-
       await waitForDataChannelOpen(dataChannel);
     } catch (error) {
       if (error instanceof RealtimeFlowError) {
@@ -567,7 +608,8 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
   const handleFollowUp = async (option: (typeof followUpOptions)[number]) => {
     if (isFollowUpLoading) return;
 
-    appendMessage('user', option);
+    const activeSource = sourceFromMode(session.currentMode);
+    appendSharedMessage('user', option, activeSource);
 
     if (realtimeStatus === 'live' && dataChannelRef.current?.readyState === 'open') {
       try {
@@ -593,7 +635,8 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
     setSessionPhase('thinking');
 
     try {
-      const combinedQuestion = question.trim() ? `${question.trim()} Follow-up: ${option}` : option;
+      const baseQuestion = session.originalQuestion.trim();
+      const combinedQuestion = baseQuestion ? `${baseQuestion} Follow-up: ${option}` : option;
 
       const response = await fetch('/api/triage', {
         method: 'POST',
@@ -610,13 +653,13 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       }
 
       setSessionPhase('responding');
-      appendMessage('assistant', data.answer);
-      appendMessage('system', `Next step: ${data.recommendedNextStep}`);
+      appendSharedMessage('assistant', data.answer, data.mode === 'fallback' ? 'fallback' : activeSource);
+      appendSystemNote(`Next step: ${data.recommendedNextStep}`, data.mode === 'fallback' ? 'fallback' : activeSource);
       setSessionPhase(realtimeStatus === 'live' ? 'listening' : realtimeStatus === 'fallback' ? 'fallback' : 'prototype');
     } catch (error) {
       console.error('[AiVideoAgentModal] Failed to fetch follow-up response:', error);
       setSessionPhase('responding');
-      appendMessage('assistant', followUpResponses[option]);
+      appendSharedMessage('assistant', followUpResponses[option], 'fallback');
       setSessionPhase(realtimeStatus === 'fallback' ? 'fallback' : 'prototype');
     } finally {
       setIsFollowUpLoading(false);
@@ -626,7 +669,6 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
   useEffect(() => {
     if (!open) {
       cleanupRealtime();
-      setTranscript([createMessage('assistant', initialAssistantLine)]);
       setIsFollowUpLoading(false);
       setRealtimeStatus('prototype');
       setSessionPhase('prototype');
@@ -635,21 +677,21 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
       return;
     }
 
+    updateSession((previous) => ensureSessionIntroMessage(previous, initialAssistantLine));
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        handleCloseModal();
-      }
+      if (event.key === 'Escape') handleCloseModal();
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open]);
+  }, [cleanupRealtime, handleCloseModal, open, resetTavusState, updateSession]);
 
   useEffect(() => {
     const container = transcriptScrollRef.current;
     if (!container) return;
     container.scrollTop = container.scrollHeight;
-  }, [transcript, isFollowUpLoading]);
+  }, [session.transcript, isFollowUpLoading]);
 
   if (!open) return null;
 
@@ -666,10 +708,10 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
           <div className="flex items-start justify-between gap-4">
             <div>
               <h3 id="ai-video-title" className="text-xl font-medium text-brand-ink">
-                Start AI video agent (2 min)
+                Continue AI agent session
               </h3>
               <p className="mt-1.5 text-sm leading-[1.5] text-brand-muted">
-                Ask a quick follow-up and get a guided PE-focused recommendation before escalating to a specialist.
+                Use audio or video avatar mode in the same session. Context and transcript stay shared.
               </p>
             </div>
             <button
@@ -702,7 +744,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="grid gap-4 lg:grid-cols-[1.02fr_0.98fr]">
             <div className="rounded-md border border-brand-line bg-brand-panel p-4">
-              <div className="relative overflow-hidden rounded-md border border-brand-line bg-[#1f2520] aspect-[16/10]">
+              <div className="relative aspect-[16/10] overflow-hidden rounded-md border border-brand-line bg-[#1f2520]">
                 {showingTavusFrame ? (
                   <iframe
                     src={tavusConversationUrl}
@@ -717,9 +759,9 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
                   <span
                     className={`h-2 w-2 rounded-full ${
                       tavusStatus === 'live'
-                        ? 'bg-[#71e440] animate-pulse'
+                        ? 'animate-pulse bg-[#71e440]'
                         : realtimeStatus === 'live'
-                          ? 'bg-[#71e440] animate-pulse'
+                          ? 'animate-pulse bg-[#71e440]'
                           : realtimeStatus === 'connecting' || tavusStatus === 'connecting'
                             ? 'bg-[#d9e85f]'
                             : 'bg-slate-300'
@@ -727,31 +769,41 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
                   />
                   <span>
                     {tavusStatus === 'live'
-                      ? 'Video Agent • Live'
+                      ? 'AI Agent • Video mode'
                       : realtimeStatus === 'live'
-                        ? 'Audio Agent • Live'
+                        ? 'AI Agent • Audio mode'
                         : tavusStatus === 'connecting' || realtimeStatus === 'connecting'
-                          ? 'Agent • Connecting'
+                          ? 'AI Agent • Connecting'
                           : tavusStatus === 'fallback'
-                            ? 'Video Agent • Fallback'
+                            ? 'AI Agent • Fallback'
                             : 'AI Agent • Prototype'}
                   </span>
                 </div>
-                <div className="absolute left-3 top-10 text-[11px] text-slate-200">
-                  {isAiSpeaking ? 'PE triage mode • Responding' : 'PE triage mode'}
-                </div>
+                <div className="absolute left-3 top-10 text-[11px] text-slate-200">{isAiSpeaking ? 'PE triage mode • Responding' : 'PE triage mode'}</div>
                 <div className="absolute bottom-3 left-3 flex items-end gap-1.5">
-                  <span className={`h-2 w-1 rounded ${(realtimeStatus === 'live' || tavusStatus === 'live') ? 'bg-[#9fd67b] animate-pulse' : 'bg-[#5f6f62]'}`} />
-                  <span className={`h-4 w-1 rounded ${(realtimeStatus === 'live' || tavusStatus === 'live') ? 'bg-[#9fd67b] animate-pulse [animation-delay:120ms]' : 'bg-[#5f6f62]'}`} />
-                  <span className={`h-3 w-1 rounded ${(realtimeStatus === 'live' || tavusStatus === 'live') ? 'bg-[#9fd67b] animate-pulse [animation-delay:240ms]' : 'bg-[#5f6f62]'}`} />
-                  <span className={`h-5 w-1 rounded ${(realtimeStatus === 'live' || tavusStatus === 'live') ? 'bg-[#9fd67b] animate-pulse [animation-delay:360ms]' : 'bg-[#5f6f62]'}`} />
+                  <span className={`h-2 w-1 rounded ${realtimeStatus === 'live' || tavusStatus === 'live' ? 'animate-pulse bg-[#9fd67b]' : 'bg-[#5f6f62]'}`} />
+                  <span
+                    className={`h-4 w-1 rounded ${
+                      realtimeStatus === 'live' || tavusStatus === 'live' ? 'animate-pulse bg-[#9fd67b] [animation-delay:120ms]' : 'bg-[#5f6f62]'
+                    }`}
+                  />
+                  <span
+                    className={`h-3 w-1 rounded ${
+                      realtimeStatus === 'live' || tavusStatus === 'live' ? 'animate-pulse bg-[#9fd67b] [animation-delay:240ms]' : 'bg-[#5f6f62]'
+                    }`}
+                  />
+                  <span
+                    className={`h-5 w-1 rounded ${
+                      realtimeStatus === 'live' || tavusStatus === 'live' ? 'animate-pulse bg-[#9fd67b] [animation-delay:360ms]' : 'bg-[#5f6f62]'
+                    }`}
+                  />
                 </div>
               </div>
 
               <div className="mt-3 rounded-md border border-brand-line bg-white p-3">
                 <p className="text-xs font-medium uppercase tracking-[0.1em] text-brand-muted">Original question</p>
                 <p className="mt-1 text-sm leading-[1.5] text-brand-ink">
-                  {question.trim() || 'No question provided. Return to the triage panel to add context.'}
+                  {session.originalQuestion.trim() || 'No question provided. Return to the triage panel to add context.'}
                 </p>
               </div>
 
@@ -762,7 +814,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
                   disabled={tavusStatus === 'connecting' || tavusStatus === 'live'}
                   className="rounded-md bg-brand-green px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:bg-[#89b86a]"
                 >
-                  {tavusStatus === 'live' ? 'Video agent connected' : tavusStatus === 'connecting' ? 'Connecting video agent...' : 'Connect video agent'}
+                  {tavusStatus === 'live' ? 'Video mode connected' : tavusStatus === 'connecting' ? 'Connecting video mode...' : 'Connect video agent'}
                 </button>
                 <button
                   type="button"
@@ -770,7 +822,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
                   disabled={realtimeStatus === 'connecting' || realtimeStatus === 'live'}
                   className="rounded-md border border-brand-line bg-white px-3.5 py-2 text-xs font-medium text-brand-muted transition-colors hover:bg-brand-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {realtimeStatus === 'live' ? 'Audio connected' : realtimeStatus === 'connecting' ? 'Connecting audio...' : 'Connect audio'}
+                  {realtimeStatus === 'live' ? 'Audio mode connected' : realtimeStatus === 'connecting' ? 'Connecting audio mode...' : 'Connect audio'}
                 </button>
                 <button
                   type="button"
@@ -815,7 +867,7 @@ export function AiVideoAgentModal({ open, question, onClose, onEscalateToSpecial
                 className="mt-3 max-h-[40vh] min-h-[220px] flex-1 overflow-y-auto rounded-md border border-dashed border-brand-line bg-brand-panel p-3"
                 aria-live="polite"
               >
-                {transcript.map((message) => (
+                {session.transcript.map((message) => (
                   <div key={message.id} className={`mb-2.5 flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div
                       className={`max-w-[92%] rounded-md px-3 py-2 text-sm leading-[1.5] ${

@@ -3,6 +3,16 @@
 import { useState } from 'react';
 import { AiVideoAgentModal } from '@/components/AiVideoAgentModal';
 import { CALENDLY_URL } from '@/data/siteConfig';
+import {
+  addSessionSystemNote,
+  appendSessionMessage,
+  createAgentSessionContext,
+  createTranscriptMessage,
+  ensureSessionIntroMessage,
+  setAgentSessionMode,
+  updateSessionTriageSummary,
+  type AgentSessionContext
+} from '@/lib/shared/agentSession';
 
 const suggestedPrompts = [
   'How should we de-risk a new CEO transition?',
@@ -30,11 +40,13 @@ const NETWORK_FALLBACK_NEXT_STEP = 'Open a specialist review to align owners, mi
 export function AgentVideoModule() {
   const [question, setQuestion] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [hasResponse, setHasResponse] = useState(false);
-  const [responseText, setResponseText] = useState('');
-  const [recommendedNextStep, setRecommendedNextStep] = useState('');
   const [responseMode, setResponseMode] = useState<'live' | 'fallback'>('fallback');
   const [aiVideoModalOpen, setAiVideoModalOpen] = useState(false);
+  const [agentSession, setAgentSession] = useState<AgentSessionContext>(() => createAgentSessionContext());
+
+  const hasResponse = Boolean(agentSession.triageAnswer);
+  const responseText = agentSession.triageAnswer ?? '';
+  const recommendedNextStep = agentSession.recommendedNextStep ?? '';
 
   const canAsk = question.trim().length > 0 && !isLoading;
 
@@ -44,9 +56,10 @@ export function AgentVideoModule() {
     if (!trimmedQuestion || isLoading) return;
 
     setIsLoading(true);
-    setHasResponse(false);
-    setResponseText('');
-    setRecommendedNextStep('');
+
+    let baseSession = createAgentSessionContext(trimmedQuestion);
+    baseSession = appendSessionMessage(baseSession, createTranscriptMessage('user', trimmedQuestion, 'triage'));
+    setAgentSession(baseSession);
 
     try {
       const response = await fetch('/api/triage', {
@@ -63,16 +76,29 @@ export function AgentVideoModule() {
         throw new Error('Triage endpoint returned an invalid response.');
       }
 
-      setResponseText(data.answer);
-      setRecommendedNextStep(data.recommendedNextStep);
       setResponseMode(data.mode);
+      let nextSession = updateSessionTriageSummary(baseSession, {
+        originalQuestion: trimmedQuestion,
+        triageAnswer: data.answer,
+        recommendedNextStep: data.recommendedNextStep
+      });
+      nextSession = appendSessionMessage(nextSession, createTranscriptMessage('assistant', data.answer, 'triage'));
+      nextSession = addSessionSystemNote(nextSession, `Recommended next step: ${data.recommendedNextStep}`, 'triage');
+      nextSession = setAgentSessionMode(nextSession, 'none', { connected: false, fallbackReason: undefined });
+      setAgentSession(nextSession);
     } catch (error) {
       console.error('[AgentVideoModule] Failed to fetch triage response:', error);
-      setResponseText(NETWORK_FALLBACK_ANSWER);
-      setRecommendedNextStep(NETWORK_FALLBACK_NEXT_STEP);
       setResponseMode('fallback');
+      let nextSession = updateSessionTriageSummary(baseSession, {
+        originalQuestion: trimmedQuestion,
+        triageAnswer: NETWORK_FALLBACK_ANSWER,
+        recommendedNextStep: NETWORK_FALLBACK_NEXT_STEP
+      });
+      nextSession = appendSessionMessage(nextSession, createTranscriptMessage('assistant', NETWORK_FALLBACK_ANSWER, 'fallback'));
+      nextSession = addSessionSystemNote(nextSession, `Recommended next step: ${NETWORK_FALLBACK_NEXT_STEP}`, 'fallback');
+      nextSession = setAgentSessionMode(nextSession, 'fallback', { connected: false, fallbackReason: 'triage unavailable' });
+      setAgentSession(nextSession);
     } finally {
-      setHasResponse(true);
       setIsLoading(false);
     }
   };
@@ -161,7 +187,10 @@ export function AgentVideoModule() {
                 <div className="mt-3 flex flex-wrap gap-2.5">
                   <button
                     type="button"
-                    onClick={() => setAiVideoModalOpen(true)}
+                    onClick={() => {
+                      setAgentSession((prev) => ensureSessionIntroMessage(prev, 'I can help triage this quickly and suggest a practical next step for your deal or operating team.'));
+                      setAiVideoModalOpen(true);
+                    }}
                     className="rounded-md bg-brand-green px-4 py-2.5 text-[13px] font-medium text-white transition-colors hover:bg-brand-greenHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-green"
                   >
                     Start AI video agent (2 min)
@@ -188,7 +217,8 @@ export function AgentVideoModule() {
 
       <AiVideoAgentModal
         open={aiVideoModalOpen}
-        question={question}
+        session={agentSession}
+        onSessionChange={setAgentSession}
         onClose={() => setAiVideoModalOpen(false)}
         onEscalateToSpecialist={handleEscalateFromAiVideo}
       />

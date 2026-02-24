@@ -22,10 +22,12 @@ This project is a **Next.js + TypeScript + Tailwind CSS** one-page prototype tha
   - Ask a portfolio question
   - Receive a concise PE-style response from server-side AI (with fallback mode)
   - Escalate to either a Tavus-powered video agent flow (when enabled) or a Calendly specialist booking flow
+  - Keep one shared agent session context so transcript and memory persist across audio/video mode switches
 
 ## Prototype vs Production
 ### Prototype/mock behavior
 - AI video agent modal keeps the prototype shell UI and now includes a feature-flagged realtime audio path
+- Agent session state is app-owned: OpenAI handles reasoning/audio, Tavus is the video/avatar layer.
 - Subscribe mode defaults to `log` (server logs emails; no ESP integration yet)
 ### Realtime status
 - Realtime audio mode is feature-flagged in the AI video modal.
@@ -107,7 +109,7 @@ If you are testing Tavus locally, set the Tavus env vars in `.env.local`; for de
   - No DB persistence; useful for validating interaction flow during demos.
 - `POST /api/tavus-session`
   - Creates a Tavus conversation session server-side and returns only client-safe fields.
-  - Accepts optional triage context so the video interaction continues the same question.
+  - Accepts shared session context (question, triage summary, recent transcript, mode metadata) so video mode continues the same agent session.
   - Never exposes `TAVUS_API_KEY` to the browser.
 
 ## Key Components
